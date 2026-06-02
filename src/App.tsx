@@ -527,6 +527,168 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
   );
 };
 
+// --- 3D TRUCK & VEHICLE CABIN COMPONENTS ---
+
+const Wheel3D: React.FC<{ position: [number, number, number] }> = ({ position }) => {
+  return (
+    <group position={position}>
+      {/* Tire Outer */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} castShadow receiveShadow>
+        <cylinderGeometry args={[0.42, 0.42, 0.28, 24]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.9} metalness={0.1} />
+      </mesh>
+      {/* Rim / Inner hub */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0, 0]} castShadow>
+        <cylinderGeometry args={[0.24, 0.24, 0.3, 24]} />
+        <meshStandardMaterial color="#cbd5e1" roughness={0.3} metalness={0.8} />
+      </mesh>
+      {/* Rim center cap */}
+      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0, 0]} castShadow>
+        <cylinderGeometry args={[0.08, 0.08, 0.32, 12]} />
+        <meshStandardMaterial color="#475569" roughness={0.2} metalness={0.9} />
+      </mesh>
+    </group>
+  );
+};
+
+const DualWheel3D: React.FC<{ position: [number, number, number], spacing?: number }> = ({ position, spacing = 0.32 }) => {
+  return (
+    <group position={position}>
+      <Wheel3D position={[0, 0, -spacing / 2]} />
+      <Wheel3D position={[0, 0, spacing / 2]} />
+    </group>
+  );
+};
+
+const TractorHead3D: React.FC<{
+  length: number;
+  width: number;
+  height: number;
+  color: string;
+}> = ({ length, width, height, color }) => {
+  const cabL = 2.4;
+  const cabW = width - 0.1;
+  const cabH = height + 0.2;
+  const bottomOffset = -0.1;
+
+  return (
+    <group position={[-1.75, 0, width / 2]}>
+      {/* Main Cabin Body */}
+      <mesh position={[0, cabH / 2 + bottomOffset, 0]} castShadow receiveShadow>
+        <boxGeometry args={[cabL, cabH, cabW]} />
+        <meshStandardMaterial color={color} roughness={0.2} metalness={0.1} />
+        <Edges color="#1e3a8a" threshold={15} />
+      </mesh>
+
+      {/* Aerodynamic wind spoiler / Top Roof Cap */}
+      <mesh position={[0.2, cabH + bottomOffset + 0.15, 0]} castShadow>
+        <boxGeometry args={[1.6, 0.3, cabW - 0.1]} />
+        <meshStandardMaterial color={color} roughness={0.3} />
+        <Edges color="#1c3d5a" />
+      </mesh>
+
+      {/* Front windshield screen (slanted) */}
+      <mesh position={[cabL / 2 - 0.1, cabH / 2 + 0.5, 0]} castShadow>
+        <boxGeometry args={[0.3, 0.8, cabW - 0.15]} />
+        <meshStandardMaterial color="#0b0f19" roughness={0.1} metalness={0.9} transparent opacity={0.88} />
+      </mesh>
+
+      {/* Front Window and Side windows */}
+      {/* Left side door glass */}
+      <mesh position={[0.1, cabH / 2 + 0.5, cabW / 2 + 0.005]} castShadow>
+        <boxGeometry args={[0.8, 0.6, 0.01]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.1} metalness={0.9} />
+      </mesh>
+      {/* Right side door glass */}
+      <mesh position={[0.1, cabH / 2 + 0.5, -cabW / 2 - 0.005]} castShadow>
+        <boxGeometry args={[0.8, 0.6, 0.01]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.1} metalness={0.9} />
+      </mesh>
+
+      {/* Front Grill / Bumper */}
+      <mesh position={[cabL / 2 + 0.02, cabH / 4 + bottomOffset, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.05, 0.8, cabW - 0.2]} />
+        <meshStandardMaterial color="#334155" roughness={0.5} metalness={0.8} />
+      </mesh>
+
+      {/* Headlights (Warm Yellow/Orange) */}
+      <mesh position={[cabL / 2 + 0.03, bottomOffset + 0.3, cabW / 2 - 0.25]} castShadow>
+        <boxGeometry args={[0.04, 0.15, 0.2]} />
+        <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={2.5} roughness={0.1} />
+      </mesh>
+      <mesh position={[cabL / 2 + 0.03, bottomOffset + 0.3, -cabW / 2 + 0.25]} castShadow>
+        <boxGeometry args={[0.04, 0.15, 0.2]} />
+        <meshStandardMaterial color="#fbbf24" emissive="#fbbf24" emissiveIntensity={2.5} roughness={0.1} />
+      </mesh>
+
+      {/* Rear exhaust chrome pipe stack */}
+      <mesh position={[-cabL / 2 + 0.2, cabH / 2 + 0.4, -cabW / 2 + 0.2]} castShadow>
+        <cylinderGeometry args={[0.06, 0.06, 1.8, 12]} />
+        <meshStandardMaterial color="#cbd5e1" metalness={0.95} roughness={0.05} />
+      </mesh>
+    </group>
+  );
+};
+
+const FullTruckChassis3D: React.FC<{
+  containerType: keyof typeof CONTAINER_TYPES;
+  showCabin: boolean;
+  showTruck: boolean;
+}> = ({ containerType, showCabin, showTruck }) => {
+  if (!showTruck) return null;
+  const cType = CONTAINER_TYPES[containerType];
+  const s = 0.001;
+  const length = cType.width * s;
+  const height = cType.height * s;
+  const width = cType.depth * s;
+
+  return (
+    <group>
+      {/* 1. MAIN CHASSIS FRAME (Slate/dark steel beams under the container) */}
+      <mesh position={[length / 2, -0.06, width / 2]} castShadow receiveShadow>
+        <boxGeometry args={[length + 3.6, 0.12, width - 0.4]} />
+        <meshStandardMaterial color="#334155" metalness={0.7} roughness={0.4} />
+      </mesh>
+
+      {/* Sideguards under the container (common on European/Asian trucks like the one in visual) */}
+      <mesh position={[length / 2 - 1.0, -0.22, 0.08]} castShadow>
+        <boxGeometry args={[length - 4.5, 0.2, 0.05]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.6} />
+      </mesh>
+      <mesh position={[length / 2 - 1.0, -0.22, width - 0.08]} castShadow>
+        <boxGeometry args={[length - 4.5, 0.2, 0.05]} />
+        <meshStandardMaterial color="#1e293b" roughness={0.6} />
+      </mesh>
+
+      {/* 2. REAR WHEELS (3 AXLES under container back door) */}
+      <DualWheel3D position={[length - 0.6, -0.42, 0.18]} />
+      <DualWheel3D position={[length - 0.6, -0.42, width - 0.18]} />
+
+      <DualWheel3D position={[length - 1.6, -0.42, 0.18]} />
+      <DualWheel3D position={[length - 1.6, -0.42, width - 0.18]} />
+
+      <DualWheel3D position={[length - 2.6, -0.42, 0.18]} />
+      <DualWheel3D position={[length - 2.6, -0.42, width - 0.18]} />
+
+      {/* 3. TRACTOR CABIN (Only shown if showCabin is true) */}
+      {showCabin && (
+        <>
+          <TractorHead3D length={length} width={width} height={height} color="#2563eb" />
+          
+          {/* Tractor Wheels */}
+          {/* Single Front Steering Wheels */}
+          <Wheel3D position={[-2.8, -0.42, 0.18]} />
+          <Wheel3D position={[-2.8, -0.42, width - 0.18]} />
+
+          {/* Dual Rear Drive Wheels under Tractor */}
+          <DualWheel3D position={[-1.3, -0.42, 0.18]} />
+          <DualWheel3D position={[-1.3, -0.42, width - 0.18]} />
+        </>
+      )}
+    </group>
+  );
+};
+
 const Container3D: React.FC<{ 
   result: PackingResult; 
   offset: [number, number, number];
@@ -535,19 +697,29 @@ const Container3D: React.FC<{
   isManualMode: boolean;
   transformMode: 'translate' | 'rotate';
   onUpdateBox: (containerId: string, boxId: string, updates: Partial<PackedBox>) => void;
-}> = ({ result, offset, selectedBoxId, onSelectBox, isManualMode, transformMode, onUpdateBox }) => {
+  renderOptions: { showCabin: boolean; showNet: boolean; showTruck: boolean };
+  timelineStep: number | null;
+  cumulativeStart: number;
+}> = ({ result, offset, selectedBoxId, onSelectBox, isManualMode, transformMode, onUpdateBox, renderOptions, timelineStep, cumulativeStart }) => {
   const cType = CONTAINER_TYPES[result.containerType];
   const s = 0.001;
 
   const netX = useMemo(() => {
-    if (!result.hasNet) return undefined;
+    if (!result.hasNet || !renderOptions.showNet) return undefined;
     const maxX = result.packedBoxes.reduce((max, b) => Math.max(max, b.x + b.width), 0);
     return maxX + 50; // 50mm buffer
-  }, [result.hasNet, result.packedBoxes]);
+  }, [result.hasNet, renderOptions.showNet, result.packedBoxes]);
 
   return (
     <group position={offset}>
       <group rotation={[0, 0, 0]} position={[0, 0, 0]}>
+        {/* Render Truck Chassis & Cabin beneath/in-front of the container */}
+        <FullTruckChassis3D 
+          containerType={result.containerType} 
+          showCabin={renderOptions.showCabin} 
+          showTruck={renderOptions.showTruck} 
+        />
+
         <mesh position={[(cType.width / 2) * s, (cType.height / 2) * s, (cType.depth / 2) * s]}>
           <boxGeometry args={[cType.width * s, cType.height * s, cType.depth * s]} />
           <meshBasicMaterial transparent opacity={0.05} color="#0f172a" side={THREE.BackSide} />
@@ -583,20 +755,27 @@ const Container3D: React.FC<{
           {CONTAINER_TYPES[result.containerType].label} — {result.packedBoxes.length} UNITS
         </Text>
 
-        {result.packedBoxes.map(box => (
-          <Box3D 
-            key={box.id} 
-            box={box} 
-            isSelected={selectedBoxId === box.id}
-            onSelect={onSelectBox}
-            isManualMode={isManualMode}
-            transformMode={transformMode}
-            onUpdate={(id, updates) => onUpdateBox(result.containerId, id, updates)}
-            allBoxes={result.packedBoxes}
-            containerType={result.containerType}
-            netX={netX}
-          />
-        ))}
+        {result.packedBoxes.map((box, boxIdx) => {
+          // Calculate global index for stuffing timeline sequence
+          const globalBoxIdx = cumulativeStart + boxIdx;
+          if (timelineStep !== null && globalBoxIdx >= timelineStep) {
+            return null;
+          }
+          return (
+            <Box3D 
+              key={box.id} 
+              box={box} 
+              isSelected={selectedBoxId === box.id}
+              onSelect={onSelectBox}
+              isManualMode={isManualMode}
+              transformMode={transformMode}
+              onUpdate={(id, updates) => onUpdateBox(result.containerId, id, updates)}
+              allBoxes={result.packedBoxes}
+              containerType={result.containerType}
+              netX={netX}
+            />
+          );
+        })}
       </group>
     </group>
   );
@@ -614,6 +793,16 @@ export default function App() {
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
   const [checkpoint, setCheckpoint] = useState<PackingResult[] | null>(null);
+  
+  // Custom Render & Timeline Options
+  const [renderOptions, setRenderOptions] = useState({
+    showCabin: true,
+    showNet: true,
+    showTruck: true
+  });
+  const [timelineStep, setTimelineStep] = useState<number | null>(null);
+  const [isPlayingTimeline, setIsPlayingTimeline] = useState(false);
+
   const orbitRef = useRef<any>(null);
 
   const uniqueModels = useMemo(() => Array.from(new Set(MODEL_LIBRARY.map(m => m.model))), []);
@@ -667,6 +856,82 @@ export default function App() {
       pushToHistory(containers, results);
     }
   }, []);
+
+  const totalPackedBoxes = useMemo(() => {
+    return results.reduce((sum, r) => sum + r.packedBoxes.length, 0);
+  }, [results]);
+
+  const getCurrentBoxInfo = useCallback((idx: number) => {
+    let count = 0;
+    for (const r of results) {
+      if (idx >= count && idx < count + r.packedBoxes.length) {
+        const box = r.packedBoxes[idx - count];
+        return `${box.modelInfo} at (${Math.round(box.x)}mm, ${Math.round(box.y)}mm, ${Math.round(box.z)}mm)`;
+      }
+      count += r.packedBoxes.length;
+    }
+    return '';
+  }, [results]);
+
+  const setCameraAngle = useCallback((angleType: 'iso' | 'rear' | 'front' | 'side' | 'top') => {
+    if (!orbitRef.current) return;
+    const controls = orbitRef.current;
+    const camera = controls.object;
+    
+    const activeContType = results[0]?.containerType || '40GP';
+    const cType = CONTAINER_TYPES[activeContType];
+    const s = 0.001;
+    const halfL = (cType.width * s) / 2;
+    const halfH = (cType.height * s) / 2;
+    const halfW = (cType.depth * s) / 2;
+
+    switch (angleType) {
+      case 'iso':
+        camera.position.set(25, 20, 25);
+        controls.target.set(halfL, halfH, halfW);
+        break;
+      case 'rear':
+        camera.position.set(cType.width * s + 8, halfH + 2, halfW);
+        controls.target.set(halfL, halfH, halfW);
+        break;
+      case 'front':
+        camera.position.set(-6, halfH + 3, halfW);
+        controls.target.set(halfL, halfH, halfW);
+        break;
+      case 'side':
+        camera.position.set(halfL, halfH, halfW + 18);
+        controls.target.set(halfL, halfH, halfW);
+        break;
+      case 'top':
+        camera.position.set(halfL, 25, halfW);
+        controls.target.set(halfL, halfH, halfW);
+        break;
+    }
+    controls.update();
+  }, [results]);
+
+  // Autoplay Timeline Sequence
+  useEffect(() => {
+    let interval: any = null;
+    if (isPlayingTimeline) {
+      interval = setInterval(() => {
+        setTimelineStep(prev => {
+          if (prev === null) {
+            if (totalPackedBoxes > 0) return 1;
+            return null;
+          }
+          if (prev >= totalPackedBoxes) {
+            setIsPlayingTimeline(false);
+            return null; // completed
+          }
+          return prev + 1;
+        });
+      }, 350);
+    } else {
+      clearInterval(interval);
+    }
+    return () => clearInterval(interval);
+  }, [isPlayingTimeline, totalPackedBoxes]);
 
   const runPacking = () => {
     setIsPacking(true);
@@ -969,6 +1234,40 @@ export default function App() {
           )}
         </div>
 
+        {/* Floating View & Render Options Panel */}
+        <div style={{ position: 'absolute', top: '24px', right: '24px', zIndex: 20, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* CAMERA ANGLES options */}
+          <div style={{ background: 'rgba(255, 255, 255, 0.98)', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '12px 16px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.05)', display: 'flex', flexDirection: 'column', gap: '8px', width: '280px' }}>
+            <span style={{ fontSize: '0.62rem', fontWeight: 950, color: '#000', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Camera Angles</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
+              <button onClick={() => setCameraAngle('iso')} className="btn-camera" title="Isometric View">ISO</button>
+              <button onClick={() => setCameraAngle('rear')} className="btn-camera" title="Rear Door View">REAR</button>
+              <button onClick={() => setCameraAngle('front')} className="btn-camera" title="Tractor Cabin View">CABIN</button>
+              <button onClick={() => setCameraAngle('side')} className="btn-camera" title="Side Profile">SIDE</button>
+              <button onClick={() => setCameraAngle('top')} className="btn-camera" title="Top-Down Ortho">TOP</button>
+            </div>
+          </div>
+
+          {/* RENDER TOGGLES */}
+          <div style={{ background: 'rgba(255, 255, 255, 0.98)', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '12px 16px', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.05)', display: 'flex', flexDirection: 'column', gap: '10px', width: '280px' }}>
+            <span style={{ fontSize: '0.62rem', fontWeight: 950, color: '#000', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Render Options</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer', color: '#1e293b' }}>
+                <input type="checkbox" checked={renderOptions.showCabin} onChange={e => setRenderOptions(prev => ({ ...prev, showCabin: e.target.checked }))} style={{ accentColor: '#000', width: '14px', height: '14px', cursor: 'pointer' }} />
+                Show cabin Tractor
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer', color: '#1e293b' }}>
+                <input type="checkbox" checked={renderOptions.showNet} onChange={e => setRenderOptions(prev => ({ ...prev, showNet: e.target.checked }))} style={{ accentColor: '#000', width: '14px', height: '14px', cursor: 'pointer' }} />
+                Elastic Net (Cargo Net)
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer', color: '#1e293b' }}>
+                <input type="checkbox" checked={renderOptions.showTruck} onChange={e => setRenderOptions(prev => ({ ...prev, showTruck: e.target.checked }))} style={{ accentColor: '#000', width: '14px', height: '14px', cursor: 'pointer' }} />
+                Show truck (Chassis & Wheels)
+              </label>
+            </div>
+          </div>
+        </div>
+
         <Canvas shadows gl={{ antialias: true }} onPointerMissed={() => setSelectedBoxId(null)}>
           <color attach="background" args={['#f8fafc']} />
           <PerspectiveCamera makeDefault position={[25, 20, 25]} fov={22} />
@@ -978,20 +1277,102 @@ export default function App() {
           <pointLight position={[-50, 40, -50]} intensity={0.5} color="#dbeafe" />
           <Grid infiniteGrid cellSize={1} sectionSize={5} sectionColor="#cbd5e1" cellColor="#e2e8f0" fadeDistance={250} />
           <group>
-            {results.map((result, idx) => (
-              <Container3D 
-                key={result.containerId} 
-                result={result} 
-                offset={[0, 0, idx * 18]} 
-                selectedBoxId={selectedBoxId}
-                onSelectBox={setSelectedBoxId}
-                isManualMode={mode === 'manual'}
-                transformMode={transformMode}
-                onUpdateBox={onUpdateBox}
-              />
-            ))}
+            {results.map((result, idx) => {
+              let cumulativeStart = 0;
+              for (let i = 0; i < idx; i++) {
+                cumulativeStart += results[i].packedBoxes.length;
+              }
+              return (
+                <Container3D 
+                  key={result.containerId} 
+                  result={result} 
+                  offset={[0, 0, idx * 18]} 
+                  selectedBoxId={selectedBoxId}
+                  onSelectBox={setSelectedBoxId}
+                  isManualMode={mode === 'manual'}
+                  transformMode={transformMode}
+                  onUpdateBox={onUpdateBox}
+                  renderOptions={renderOptions}
+                  timelineStep={timelineStep}
+                  cumulativeStart={cumulativeStart}
+                />
+              );
+            })}
           </group>
         </Canvas>
+
+        {/* Stuffing Sequence Timeline Widget */}
+        {results.length > 0 && totalPackedBoxes > 0 && (
+          <div style={{ position: 'absolute', bottom: '24px', left: '24px', right: '400px', zIndex: 20, background: 'rgba(255, 255, 255, 0.98)', border: '1px solid #e2e8f0', borderRadius: '18px', padding: '16px 20px', boxShadow: '0 20px 40px -15px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span className="badge" style={{ background: '#000', color: '#fff', padding: '4px 8px', borderRadius: '6px', fontSize: '0.65rem' }}>STUFFING SEQUENCE</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 850, color: '#101827' }}>
+                  {timelineStep === null ? 'All Cargo Packed (Viewing Complete Trailer)' : `Loading Sequence: Step ${timelineStep} of ${totalPackedBoxes}`}
+                </span>
+              </div>
+              
+              {timelineStep !== null && timelineStep > 0 && (
+                <div style={{ fontSize: '0.72rem', color: '#4b5563', fontWeight: 800, background: '#f3f4f6', padding: '4.5px 12px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                  Current Loaded: <span style={{ color: '#2563eb' }}>{getCurrentBoxInfo(timelineStep - 1)}</span>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button 
+                  onClick={() => setTimelineStep(0)} 
+                  className="btn-timeline-control" 
+                  title="Reset Packing"
+                >
+                  ⏮
+                </button>
+                <button 
+                  onClick={() => setTimelineStep(prev => prev === null ? totalPackedBoxes - 1 : Math.max(0, prev - 1))} 
+                  className="btn-timeline-control" 
+                  title="Previous Step"
+                >
+                  ◀
+                </button>
+                <button 
+                  onClick={() => setIsPlayingTimeline(prev => !prev)} 
+                  className="btn-timeline-control" 
+                  style={{ background: isPlayingTimeline ? '#dc2626' : '#10b981', color: '#fff', minWidth: '95px', fontWeight: 'bold' }}
+                  title={isPlayingTimeline ? 'Pause Auto Load' : 'Auto Load Step-by-Step'}
+                >
+                  {isPlayingTimeline ? '⏸ PAUSE' : '▶ AUTO PACK'}
+                </button>
+                <button 
+                  onClick={() => setTimelineStep(prev => prev === null ? null : (prev >= totalPackedBoxes ? null : prev + 1))} 
+                  className="btn-timeline-control" 
+                  title="Next Step"
+                >
+                  ▶
+                </button>
+                <button 
+                  onClick={() => { setTimelineStep(null); setIsPlayingTimeline(false); }} 
+                  className="btn-timeline-control" 
+                  title="Show Solid Packing"
+                >
+                  ★ FULL VIEW
+                </button>
+              </div>
+
+              <input 
+                type="range" 
+                min="0" 
+                max={totalPackedBoxes} 
+                value={timelineStep === null ? totalPackedBoxes : timelineStep} 
+                onChange={e => {
+                  const val = parseInt(e.target.value);
+                  setTimelineStep(val === totalPackedBoxes ? null : val);
+                }}
+                style={{ flex: 1, accentColor: '#000', cursor: 'pointer', height: '6px', borderRadius: '3px' }}
+              />
+            </div>
+          </div>
+        )}
 
         {results.length > 0 && (
           <div className="analytic-overlay">
@@ -1017,6 +1398,10 @@ export default function App() {
       </div>
 
       <style>{`
+        .btn-camera { background: #f1f5f9; border: 1px solid #cbd5e1; color: #1e293b; padding: 6px 4px; border-radius: 8px; font-size: 0.65rem; font-weight: 800; cursor: pointer; transition: all 0.2s; text-align: center; }
+        .btn-camera:hover { background: #000; color: #fff; border-color: #000; }
+        .btn-timeline-control { background: #f1f5f9; border: 1px solid #cbd5e1; color: #1e293b; padding: 6px 10px; border-radius: 8px; font-size: 0.72rem; font-weight: 800; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; gap: 4px; }
+        .btn-timeline-control:hover { background: #e2e8f0; transform: scale(1.04); }
         .mode-btn { background: #fff; border: 1px solid #e2e8f0; color: #64748b; padding: 12px; border-radius: 12px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
         .mode-btn.active { background: #000; color: #fff; border-color: #000; }
         .mode-btn:disabled { opacity: 0.3; cursor: not-allowed; }
