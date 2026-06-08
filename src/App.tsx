@@ -22,7 +22,9 @@ import {
   Save as LucideSave,
   Grid3X3 as LucideNet,
   Undo as LucideUndo,
-  Redo as LucideRedo
+  Redo as LucideRedo,
+  Copy as LucideCopy,
+  Clipboard as LucideClipboard
 } from 'lucide-react';
 
 // --- Constants & Library ---
@@ -143,7 +145,7 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 
 // --- Strategic No-Gap Packing Logic ---
 
-function packBoxesOptimized(containers: ContainerInstance[]): PackingResult[] {
+function packBoxesOptimized(containers: ContainerInstance[], modelLibrary: typeof MODEL_LIBRARY = MODEL_LIBRARY): PackingResult[] {
   const results: PackingResult[] = [];
 
   containers.forEach(containerInst => {
@@ -151,7 +153,7 @@ function packBoxesOptimized(containers: ContainerInstance[]): PackingResult[] {
     const packedBoxes: PackedBox[] = [];
     
     let loadingTasks = containerInst.items.map(item => {
-      const match = MODEL_LIBRARY.find(m => m.model === item.model && m.size === item.size);
+      const match = modelLibrary.find(m => m.model === item.model && m.size === item.size);
       const dims = match ? { l: match.length, w: match.width, h: match.height } : { l: 200, w: 200, h: 200 };
       return { ...dims, item };
     });
@@ -323,6 +325,85 @@ function applyGravity(box: PackedBox, allBoxes: PackedBox[], containerType: keyo
   return current;
 }
 
+function checkGroupCollision(
+  selectedBoxIds: string[],
+  delta: { x: number; y: number; z: number },
+  allBoxes: PackedBox[],
+  containerType: keyof typeof CONTAINER_TYPES,
+  netX?: number
+): boolean {
+  const cType = CONTAINER_TYPES[containerType];
+  const nonSelected = allBoxes.filter(b => !selectedBoxIds.includes(b.id));
+
+  for (const id of selectedBoxIds) {
+    const box = allBoxes.find(b => b.id === id);
+    if (!box) continue;
+
+    const testBox = {
+      ...box,
+      x: box.x + delta.x,
+      y: box.y + delta.y,
+      z: box.z + delta.z
+    };
+
+    // Container Walls
+    if (testBox.x < 0 || testBox.y < 0 || testBox.z < 0) return true;
+    if (testBox.x + testBox.width > cType.width || testBox.y + testBox.height > cType.height || testBox.z + testBox.depth > cType.depth) return true;
+
+    // Net
+    if (netX !== undefined && testBox.x + testBox.width > netX) return true;
+
+    // Collision with non-selected
+    const collides = nonSelected.some(other => {
+      return (
+        testBox.x < other.x + other.width - 1 &&
+        testBox.x + testBox.width > other.x + 1 &&
+        testBox.y < other.y + other.height - 1 &&
+        testBox.y + testBox.height > other.y + 1 &&
+        testBox.z < other.z + other.depth - 1 &&
+        testBox.z + testBox.depth > other.z + 1
+      );
+    });
+
+    if (collides) return true;
+  }
+
+  return false;
+}
+
+function applyGroupGravity(
+  selectedBoxIds: string[],
+  allBoxes: PackedBox[],
+  containerType: keyof typeof CONTAINER_TYPES,
+  netX?: number
+): { x: number; y: number; z: number } {
+  let delta = { x: 0, y: 0, z: 0 };
+  let settled = false;
+
+  // Settle down (Y)
+  while (!settled) {
+    const nextDelta = { ...delta, y: delta.y - 10 };
+    if (checkGroupCollision(selectedBoxIds, nextDelta, allBoxes, containerType, netX)) {
+      settled = true;
+    } else {
+      delta = nextDelta;
+    }
+  }
+
+  // Settle back (X-axis)
+  settled = false;
+  while (!settled) {
+    const nextDelta = { ...delta, x: delta.x - 10 };
+    if (checkGroupCollision(selectedBoxIds, nextDelta, allBoxes, containerType, netX)) {
+      settled = true;
+    } else {
+      delta = nextDelta;
+    }
+  }
+
+  return delta;
+}
+
 function findBestRotation(centerX: number, centerY: number, centerZ: number, originalBox: PackedBox, allBoxes: PackedBox[], containerType: keyof typeof CONTAINER_TYPES, netX?: number): PackedBox | null {
   const dims = [originalBox.width, originalBox.height, originalBox.depth];
   
@@ -373,7 +454,8 @@ function findBestRotation(centerX: number, centerY: number, centerZ: number, ori
 interface Box3DProps {
   box: PackedBox;
   isSelected: boolean;
-  onSelect: (id: string) => void;
+  selectedBoxIds?: string[];
+  onSelect: (id: string, selectMultiple?: boolean) => void;
   isManualMode: boolean;
   transformMode: 'translate' | 'rotate';
   onUpdate: (id: string, updates: Partial<PackedBox>) => void;
@@ -382,7 +464,7 @@ interface Box3DProps {
   netX?: number;
 }
 
-const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, transformMode, onUpdate, allBoxes, containerType, netX }) => {
+const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onSelect, isManualMode, transformMode, onUpdate, allBoxes, containerType, netX }) => {
   const s = 0.001; 
   const meshRef = useRef<THREE.Mesh>(null);
   const lastValidPos = useRef({ x: box.x, y: box.y, z: box.z, width: box.width, height: box.height, depth: box.depth });
@@ -392,6 +474,8 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
     lastValidPos.current = { x: box.x, y: box.y, z: box.z, width: box.width, height: box.height, depth: box.depth };
     setIsValid(true);
   }, [box.x, box.y, box.z, box.width, box.height, box.depth]);
+
+  const isPrimaryAnchor = selectedBoxIds[0] === box.id;
 
   return (
     <group>
@@ -403,7 +487,7 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
         onClick={(e) => {
           if (isManualMode) {
             e.stopPropagation();
-            onSelect(box.id);
+            onSelect(box.id, e.shiftKey || e.ctrlKey || e.metaKey);
           }
         }}
       >
@@ -420,14 +504,13 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
         <Edges color={isSelected ? (isValid ? "#3b82f6" : "#ef4444") : "#000"} threshold={15} opacity={isSelected ? 1 : 0.6} transparent />
       </mesh>
 
-      {isSelected && isManualMode && (
+      {isSelected && isManualMode && isPrimaryAnchor && (
         <TransformControls 
           object={meshRef.current || undefined} 
           mode={transformMode}
           onObjectChange={() => {
             if (meshRef.current) {
               const pos = meshRef.current.position;
-              const rot = meshRef.current.rotation;
               const cType = CONTAINER_TYPES[containerType];
               
               // Clamp to container boundaries to prevent passing through walls
@@ -447,20 +530,28 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
               const centerZ = pos.z / s;
               
               if (transformMode === 'translate') {
-                const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
-                if (bestFit) {
-                  meshRef.current.scale.set(
-                    bestFit.width / box.width,
-                    bestFit.height / box.height,
-                    bestFit.depth / box.depth
-                  );
-                  if (!isValid) setIsValid(true);
+                const isMulti = selectedBoxIds && selectedBoxIds.includes(box.id) && selectedBoxIds.length > 1;
+                if (isMulti) {
+                  const dragDeltaX = centerX - (box.x + box.width / 2);
+                  const dragDeltaY = centerY - (box.y + box.height / 2);
+                  const dragDeltaZ = centerZ - (box.z + box.depth / 2);
+                  const collides = checkGroupCollision(selectedBoxIds, { x: dragDeltaX, y: dragDeltaY, z: dragDeltaZ }, allBoxes, containerType, netX);
+                  setIsValid(!collides);
                 } else {
-                  if (isValid) setIsValid(false);
+                  const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
+                  if (bestFit) {
+                    meshRef.current.scale.set(
+                      bestFit.width / box.width,
+                      bestFit.height / box.height,
+                      bestFit.depth / box.depth
+                    );
+                    if (!isValid) setIsValid(true);
+                  } else {
+                    if (isValid) setIsValid(false);
+                  }
                 }
               } else {
                 // In rotate mode, we check collision with current rotation
-                // We'll approximate the box as its current dimensions for collision during drag
                 const currentBox = {
                   ...box,
                   x: centerX - box.width / 2,
@@ -474,39 +565,54 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
           onMouseUp={() => {
             if (meshRef.current) {
               const pos = meshRef.current.position;
-              const rot = meshRef.current.rotation;
               const centerX = pos.x / s;
               const centerY = pos.y / s;
               const centerZ = pos.z / s;
 
+              const isMulti = selectedBoxIds && selectedBoxIds.includes(box.id) && selectedBoxIds.length > 1;
+
               if (transformMode === 'translate') {
-                const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
-                if (!bestFit) {
-                  onUpdate(box.id, lastValidPos.current);
+                if (isMulti) {
+                  const dragDeltaX = centerX - (box.x + box.width / 2);
+                  const dragDeltaY = centerY - (box.y + box.height / 2);
+                  const dragDeltaZ = centerZ - (box.z + box.depth / 2);
+
+                  const baseDelta = { x: dragDeltaX, y: dragDeltaY, z: dragDeltaZ };
+                  const collides = checkGroupCollision(selectedBoxIds, baseDelta, allBoxes, containerType, netX);
+                  if (collides) {
+                    onUpdate(box.id, lastValidPos.current);
+                  } else {
+                    const gravityDelta = applyGroupGravity(selectedBoxIds, allBoxes, containerType, netX);
+                    onUpdate(box.id, {
+                      x: box.x + baseDelta.x + gravityDelta.x,
+                      y: box.y + baseDelta.y + gravityDelta.y,
+                      z: box.z + baseDelta.z + gravityDelta.z
+                    });
+                  }
                   if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
                   setIsValid(true);
                 } else {
-                  const settledBox = applyGravity(bestFit, allBoxes, containerType, netX);
-                  onUpdate(box.id, { 
-                    x: settledBox.x, 
-                    y: settledBox.y, 
-                    z: settledBox.z,
-                    width: settledBox.width,
-                    height: settledBox.height,
-                    depth: settledBox.depth
-                  });
-                  if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
-                  setIsValid(true);
+                  const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
+                  if (!bestFit) {
+                    onUpdate(box.id, lastValidPos.current);
+                    if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
+                    setIsValid(true);
+                  } else {
+                    const settledBox = applyGravity(bestFit, allBoxes, containerType, netX);
+                    onUpdate(box.id, { 
+                      x: settledBox.x, 
+                      y: settledBox.y, 
+                      z: settledBox.z,
+                      width: settledBox.width,
+                      height: settledBox.height,
+                      depth: settledBox.depth
+                    });
+                    if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
+                    setIsValid(true);
+                  }
                 }
               } else {
                 // Rotate mode: detect which axis was rotated 90 deg and swap dimensions
-                const euler = new THREE.Euler().setFromQuaternion(meshRef.current.quaternion);
-                const rx = Math.round(euler.x / (Math.PI / 2));
-                const ry = Math.round(euler.y / (Math.PI / 2));
-                const rz = Math.round(euler.z / (Math.PI / 2));
-                
-                // For simplicity, we'll just use the auto-rotate logic to find the best fit 
-                // in the current position after a manual rotation attempt
                 const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
                 if (bestFit) {
                   onUpdate(box.id, { 
@@ -514,7 +620,7 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, onSelect, isManualMode, 
                     width: bestFit.width, height: bestFit.height, depth: bestFit.depth
                   });
                 } else {
-                  onUpdate(box.id, lastValidPos.current);
+                   onUpdate(box.id, lastValidPos.current);
                 }
                 meshRef.current.rotation.set(0, 0, 0);
                 setIsValid(true);
@@ -692,15 +798,15 @@ const FullTruckChassis3D: React.FC<{
 const Container3D: React.FC<{ 
   result: PackingResult; 
   offset: [number, number, number];
-  selectedBoxId: string | null;
-  onSelectBox: (id: string) => void;
+  selectedBoxIds: string[];
+  onSelectBox: (id: string, selectMultiple?: boolean) => void;
   isManualMode: boolean;
   transformMode: 'translate' | 'rotate';
   onUpdateBox: (containerId: string, boxId: string, updates: Partial<PackedBox>) => void;
   renderOptions: { showCabin: boolean; showNet: boolean; showTruck: boolean };
   timelineStep: number | null;
   cumulativeStart: number;
-}> = ({ result, offset, selectedBoxId, onSelectBox, isManualMode, transformMode, onUpdateBox, renderOptions, timelineStep, cumulativeStart }) => {
+}> = ({ result, offset, selectedBoxIds, onSelectBox, isManualMode, transformMode, onUpdateBox, renderOptions, timelineStep, cumulativeStart }) => {
   const cType = CONTAINER_TYPES[result.containerType];
   const s = 0.001;
 
@@ -765,7 +871,8 @@ const Container3D: React.FC<{
             <Box3D 
               key={box.id} 
               box={box} 
-              isSelected={selectedBoxId === box.id}
+              isSelected={selectedBoxIds.includes(box.id)}
+              selectedBoxIds={selectedBoxIds}
               onSelect={onSelectBox}
               isManualMode={isManualMode}
               transformMode={transformMode}
@@ -784,6 +891,59 @@ const Container3D: React.FC<{
 // --- App Hub ---
 
 export default function App() {
+  const [modelLibrary, setModelLibrary] = useState(MODEL_LIBRARY);
+  const [customModels, setCustomModels] = useState<{ model: string; size: string; length: number; width: number; height: number }[]>([]);
+  const [showCustomModelSec, setShowCustomModelSec] = useState(false);
+  
+  const [newModel, setNewModel] = useState('');
+  const [newSize, setNewSize] = useState('');
+  const [newLength, setNewLength] = useState<number>(300);
+  const [newWidth, setNewWidth] = useState<number>(300);
+  const [newHeight, setNewHeight] = useState<number>(300);
+
+  const handleAddNewModel = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!newModel.trim() || !newSize.trim()) {
+      alert("Please enter both Model name and Size.");
+      return;
+    }
+    if (newLength <= 0 || newWidth <= 0 || newHeight <= 0) {
+      alert("Dimensions must be positive values.");
+      return;
+    }
+
+    const cleanedModel = newModel.trim().toUpperCase();
+    const cleanedSize = newSize.trim();
+
+    // Check if duplicate exists
+    const duplicate = modelLibrary.find(m => m.model === cleanedModel && m.size === cleanedSize);
+    if (duplicate) {
+      alert(`Model ${cleanedModel} with size ${cleanedSize} already exists!`);
+      return;
+    }
+
+    const newItem = {
+      model: cleanedModel,
+      size: cleanedSize,
+      length: Number(newLength),
+      width: Number(newWidth),
+      height: Number(newHeight)
+    };
+
+    setModelLibrary(prev => [...prev, newItem]);
+    setCustomModels(prev => [...prev, newItem]);
+
+    setNewSize('');
+    setNewLength(300);
+    setNewWidth(300);
+    setNewHeight(300);
+  };
+
+  const handleRemoveCustomModel = (model: string, size: string) => {
+    setModelLibrary(prev => prev.filter(m => !(m.model === model && m.size === size)));
+    setCustomModels(prev => prev.filter(m => !(m.model === model && m.size === size)));
+  };
+
   const [containers, setContainers] = useState<ContainerInstance[]>([{ id: generateId(), type: '20GP', items: [] }]);
   const [results, setResults] = useState<PackingResult[]>([]);
   const [history, setHistory] = useState<HistoryState[]>([]);
@@ -791,7 +951,27 @@ export default function App() {
   const [isPacking, setIsPacking] = useState(false);
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
-  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+  const [selectedBoxIds, setSelectedBoxIds] = useState<string[]>([]);
+  const selectedBoxId = selectedBoxIds[0] || null;
+  const setSelectedBoxId = useCallback((id: string | null) => {
+    setSelectedBoxIds(id ? [id] : []);
+  }, []);
+
+  const handleSelectBox = useCallback((id: string, selectMultiple?: boolean) => {
+    setSelectedBoxIds(prev => {
+      if (selectMultiple) {
+        if (prev.includes(id)) {
+          return prev.filter(x => x !== id);
+        } else {
+          return [...prev, id];
+        }
+      } else {
+        return [id];
+      }
+    });
+  }, []);
+
+  const [copiedBoxes, setCopiedBoxes] = useState<PackedBox[]>([]);
   const [checkpoint, setCheckpoint] = useState<PackingResult[] | null>(null);
   
   // Custom Render & Timeline Options
@@ -805,7 +985,7 @@ export default function App() {
 
   const orbitRef = useRef<any>(null);
 
-  const uniqueModels = useMemo(() => Array.from(new Set(MODEL_LIBRARY.map(m => m.model))), []);
+  const uniqueModels = useMemo(() => Array.from(new Set(modelLibrary.map(m => m.model))), [modelLibrary]);
 
   const pushToHistory = useCallback((newContainers: ContainerInstance[], newResults: PackingResult[]) => {
     const state: HistoryState = {
@@ -937,7 +1117,7 @@ export default function App() {
     setIsPacking(true);
     setSelectedBoxId(null);
     setTimeout(() => {
-      const packed = packBoxesOptimized(containers);
+      const packed = packBoxesOptimized(containers, modelLibrary);
       commitState(containers, packed);
       setIsPacking(false);
       setMode('auto');
@@ -977,15 +1157,95 @@ export default function App() {
     if (changed) commitState(containers, newResults);
   }, [selectedBoxId, mode, results, containers, commitState]);
 
+  const copySelectedBoxes = useCallback(() => {
+    if (selectedBoxIds.length === 0) return;
+    const matched: PackedBox[] = [];
+    results.forEach(r => {
+      r.packedBoxes.forEach(b => {
+        if (selectedBoxIds.includes(b.id)) {
+          matched.push({ ...b });
+        }
+      });
+    });
+    if (matched.length > 0) {
+      setCopiedBoxes(matched);
+    }
+  }, [selectedBoxIds, results]);
+
+  const pasteCopiedBoxes = useCallback(() => {
+    if (copiedBoxes.length === 0 || results.length === 0) return;
+
+    let targetContainerId = results[0].containerId;
+    if (selectedBoxIds.length > 0) {
+      for (const r of results) {
+        if (r.packedBoxes.some(b => b.id === selectedBoxIds[0])) {
+          targetContainerId = r.containerId;
+          break;
+        }
+      }
+    }
+
+    const nextResults = JSON.parse(JSON.stringify(results)) as PackingResult[];
+    const nextContainers = JSON.parse(JSON.stringify(containers)) as ContainerInstance[];
+
+    const targetResult = nextResults.find(r => r.containerId === targetContainerId);
+    const targetContainer = nextContainers.find(c => c.id === targetContainerId);
+
+    if (!targetResult || !targetContainer) return;
+
+    const newPastedIds: string[] = [];
+    const pastedBoxes: PackedBox[] = copiedBoxes.map(box => {
+      const newBoxId = generateId();
+      newPastedIds.push(newBoxId);
+
+      const cargoItem = targetContainer.items.find(item => item.id === box.itemId || (item.model === box.modelInfo.split(' (')[0]));
+      if (cargoItem) {
+        cargoItem.qty += 1;
+      }
+
+      return {
+        ...box,
+        id: newBoxId,
+        x: Math.max(0, box.x + 100),
+        y: box.y + 400,
+        z: box.z
+      };
+    });
+
+    targetResult.packedBoxes.push(...pastedBoxes);
+    commitState(nextContainers, nextResults);
+    setSelectedBoxIds(newPastedIds);
+  }, [copiedBoxes, results, containers, selectedBoxIds, commitState]);
+
   const deleteSelectedBox = useCallback(() => {
-    if (!selectedBoxId || mode !== 'manual') return;
-    const newResults = results.map(r => ({
-      ...r,
-      packedBoxes: r.packedBoxes.filter(b => b.id !== selectedBoxId)
-    }));
-    commitState(containers, newResults);
-    setSelectedBoxId(null);
-  }, [selectedBoxId, mode, results, containers, commitState]);
+    if (selectedBoxIds.length === 0 || mode !== 'manual') return;
+
+    const nextContainers = JSON.parse(JSON.stringify(containers)) as ContainerInstance[];
+    const nextResults = JSON.parse(JSON.stringify(results)) as PackingResult[];
+
+    for (const id of selectedBoxIds) {
+      for (const r of nextResults) {
+        const box = r.packedBoxes.find(b => b.id === id);
+        if (box) {
+          const targetCont = nextContainers.find(c => c.id === r.containerId);
+          if (targetCont) {
+            const cargoItem = targetCont.items.find(item => item.id === box.itemId || (item.model === box.modelInfo.split(' (')[0]));
+            if (cargoItem && cargoItem.qty > 0) {
+              cargoItem.qty -= 1;
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    nextResults.forEach(r => {
+      r.packedBoxes = r.packedBoxes.filter(b => !selectedBoxIds.includes(b.id));
+    });
+
+    commitState(nextContainers, nextResults);
+    setSelectedBoxIds([]);
+  }, [selectedBoxIds, mode, results, containers, commitState]);
 
   const moveSelectedBox = useCallback((direction: string) => {
     if (mode !== 'manual') return;
@@ -1042,16 +1302,26 @@ export default function App() {
       } else if (isCtrl && key === 'y') {
         e.preventDefault();
         redo();
+      } else if (isCtrl && key === 'c') {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
+          e.preventDefault();
+          copySelectedBoxes();
+        }
+      } else if (isCtrl && key === 'v') {
+        if (mode === 'manual' && copiedBoxes.length > 0) {
+          e.preventDefault();
+          pasteCopiedBoxes();
+        }
       } else if (key === 'r') {
-        if (mode === 'manual' && selectedBoxId) {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
           setTransformMode(prev => prev === 'translate' ? 'rotate' : 'translate');
         }
       } else if (key === 't') {
-        if (mode === 'manual' && selectedBoxId) {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
           rotateSelectedBox();
         }
       } else if (key === 'delete' || key === 'backspace') {
-        if (mode === 'manual' && selectedBoxId) {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
           e.preventDefault();
           deleteSelectedBox();
         }
@@ -1064,7 +1334,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo, rotateSelectedBox, deleteSelectedBox, moveSelectedBox, mode, selectedBoxId]);
+  }, [undo, redo, rotateSelectedBox, deleteSelectedBox, moveSelectedBox, copySelectedBoxes, pasteCopiedBoxes, mode, selectedBoxIds, copiedBoxes]);
 
   const saveCheckpoint = () => {
     setCheckpoint(JSON.parse(JSON.stringify(results)));
@@ -1084,17 +1354,45 @@ export default function App() {
   };
 
   const onUpdateBox = useCallback((containerId: string, boxId: string, updates: Partial<PackedBox>) => {
+    let originalBox: PackedBox | undefined = undefined;
+    for (const r of results) {
+      if (r.containerId === containerId) {
+        originalBox = r.packedBoxes.find(b => b.id === boxId);
+        break;
+      }
+    }
+
+    if (!originalBox) return;
+
+    const dx = updates.x !== undefined ? updates.x - originalBox.x : 0;
+    const dy = updates.y !== undefined ? updates.y - originalBox.y : 0;
+    const dz = updates.z !== undefined ? updates.z - originalBox.z : 0;
+
+    const useGroupUpdate = selectedBoxIds.includes(boxId) && selectedBoxIds.length > 1;
+
     const next = results.map(r => {
       if (r.containerId === containerId) {
         return {
           ...r,
-          packedBoxes: r.packedBoxes.map(b => b.id === boxId ? { ...b, ...updates } : b)
+          packedBoxes: r.packedBoxes.map(b => {
+            if (useGroupUpdate && selectedBoxIds.includes(b.id)) {
+              return {
+                ...b,
+                x: b.x + dx,
+                y: b.y + dy,
+                z: b.z + dz
+              };
+            } else if (b.id === boxId) {
+              return { ...b, ...updates };
+            }
+            return b;
+          })
         };
       }
       return r;
     });
     commitState(containers, next);
-  }, [results, containers, commitState]);
+  }, [results, containers, commitState, selectedBoxIds]);
 
   const addContainer = () => commitState([...containers, { id: generateId(), type: '20GP', items: [] }], results);
   const removeContainer = (id: string) => commitState(containers.filter(c => c.id !== id), results.filter(r => r.containerId !== id));
@@ -1141,6 +1439,157 @@ export default function App() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', marginBottom: '24px', paddingRight: '8px' }}>
+          {/* Toggle Button for Add Custom Model & Size */}
+          <button 
+            type="button"
+            onClick={() => setShowCustomModelSec(!showCustomModelSec)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: '8px',
+              height: '38px',
+              fontSize: '0.75rem',
+              fontWeight: 800,
+              cursor: 'pointer',
+              background: showCustomModelSec ? '#f1f5f9' : '#000',
+              color: showCustomModelSec ? '#0f172a' : '#fff',
+              border: showCustomModelSec ? '1.5px dashed #cbd5e1' : '1px solid #000',
+              borderRadius: '10px',
+              marginBottom: '16px',
+              transition: 'all 0.2s',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.02)'
+            }}
+            id="toggle-custom-model-sec-btn"
+          >
+            {showCustomModelSec ? '✕ Hide Custom Model Creator' : '➕ Add Custom Model & Size'}
+          </button>
+
+          {/* Add Model & Size Section */}
+          {showCustomModelSec && (
+            <div style={{
+              background: '#f8fafc',
+              border: '2px dashed #cbd5e1',
+              borderRadius: '16px',
+              padding: '16px',
+              marginBottom: '24px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.65rem', fontWeight: 950, color: '#000', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Add Custom Model & Size
+                </span>
+                <span style={{ fontSize: '0.6rem', color: '#64748b', fontWeight: 700 }}>H * W * L on mm</span>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#475569', textTransform: 'uppercase' }}>Model Name</span>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. FQ810" 
+                    value={newModel} 
+                    onChange={e => setNewModel(e.target.value)}
+                    style={{ width: '100%', padding: '6px 10px', fontSize: '0.75rem', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none', background: '#fff', color: '#000', fontWeight: 700 }}
+                    id="add-model-name-input"
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#475569', textTransform: 'uppercase' }}>Size</span>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. 21" 
+                    value={newSize} 
+                    onChange={e => setNewSize(e.target.value)}
+                    style={{ width: '100%', padding: '6px 10px', fontSize: '0.75rem', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none', background: '#fff', color: '#000', fontWeight: 700 }}
+                    id="add-model-size-input"
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#475569', textTransform: 'uppercase' }}>Dimensions: H * W * L (mm)</span>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 8px' }}>
+                    <span style={{ fontSize: '0.62rem', fontWeight: 900, color: '#94a3b8' }}>H</span>
+                    <input 
+                      type="number" 
+                      value={newHeight || ''} 
+                      placeholder="Height"
+                      onChange={e => setNewHeight(parseInt(e.target.value) || 0)}
+                      style={{ width: '100%', border: 'none', outline: 'none', fontSize: '0.72rem', fontWeight: 700, color: '#000', textAlign: 'right' }}
+                      min="1"
+                      id="add-model-height"
+                    />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 8px' }}>
+                    <span style={{ fontSize: '0.62rem', fontWeight: 900, color: '#94a3b8' }}>W</span>
+                    <input 
+                      type="number" 
+                      value={newWidth || ''} 
+                      placeholder="Width"
+                      onChange={e => setNewWidth(parseInt(e.target.value) || 0)}
+                      style={{ width: '100%', border: 'none', outline: 'none', fontSize: '0.72rem', fontWeight: 700, color: '#000', textAlign: 'right' }}
+                      min="1"
+                      id="add-model-width"
+                    />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '5px 8px' }}>
+                    <span style={{ fontSize: '0.62rem', fontWeight: 900, color: '#94a3b8' }}>L</span>
+                    <input 
+                      type="number" 
+                      value={newLength || ''} 
+                      placeholder="Length"
+                      onChange={e => setNewLength(parseInt(e.target.value) || 0)}
+                      style={{ width: '100%', border: 'none', outline: 'none', fontSize: '0.72rem', fontWeight: 700, color: '#000', textAlign: 'right' }}
+                      min="1"
+                      id="add-model-length"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={handleAddNewModel}
+                className="btn-secondary"
+                style={{ width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '6px', height: '32px', fontSize: '0.75rem', fontWeight: 800, cursor: 'pointer', background: '#000', color: '#fff', border: '1px solid #000', borderRadius: '8px' }}
+                id="save-model-btn"
+              >
+                <LucidePlus size={14} /> Add Model to Registry
+              </button>
+
+              {customModels.length > 0 && (
+                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '10px', marginTop: '4px' }}>
+                  <span style={{ fontSize: '0.58rem', fontWeight: 900, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '6px' }}>
+                    Custom Models Loaded ({customModels.length})
+                  </span>
+                  <div style={{ maxHeight: '90px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px', paddingRight: '2px' }}>
+                    {customModels.map((cm, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', padding: '6px 10px', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '0.68rem', color: '#1e293b' }}>
+                        <div style={{ fontWeight: 600 }}>
+                          <span style={{ color: '#2563eb', fontWeight: 800 }}>{cm.model}</span> (Size {cm.size})
+                          <div style={{ fontSize: '0.6rem', color: '#64748b' }}>H:{cm.height} × W:{cm.width} × L:{cm.length} mm</div>
+                        </div>
+                        <button 
+                          type="button" 
+                          onClick={() => handleRemoveCustomModel(cm.model, cm.size)} 
+                          style={{ border: 'none', background: 'transparent', color: '#ef4444', cursor: 'pointer', fontSize: '0.75rem', padding: '4px', fontWeight: 'bold' }}
+                          title="Delete Model"
+                          id={`delete-custom-model-${cm.model}-${cm.size}`}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
             <h2 style={{ margin: 0, fontSize: '0.65rem', fontWeight: 950, color: '#000', textTransform: 'uppercase' }}>Fleet Setup</h2>
             <div style={{ display: 'flex', gap: '6px' }}>
@@ -1177,7 +1626,7 @@ export default function App() {
                   <div className="input-field"><label>Size</label>
                     <select value={item.size} onChange={e => updateCargoItem(c.id, item.id, { size: e.target.value })}>
                       <option value="">--</option>
-                      {MODEL_LIBRARY.filter(m => m.model === item.model).map(m => <option key={m.size} value={m.size}>{m.size}"</option>)}
+                      {modelLibrary.filter(m => m.model === item.model).map(m => <option key={m.size} value={m.size}>{m.size}"</option>)}
                     </select>
                   </div>
                   <div className="input-field" style={{ width: '45px' }}><label>Qty</label><input type="number" min="1" value={item.qty} onChange={e => updateCargoItem(c.id, item.id, { qty: parseInt(e.target.value) || 1 })} /></div>
@@ -1218,18 +1667,31 @@ export default function App() {
           <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
           <button onClick={undo} disabled={historyIndex <= 0} className="mode-btn" title="Undo (Ctrl+Z)"><LucideUndo size={20} /></button>
           <button onClick={redo} disabled={historyIndex >= history.length - 1} className="mode-btn" title="Redo (Ctrl+Y)"><LucideRedo size={20} /></button>
-          {selectedBoxId && mode === 'manual' && (
+          {mode === 'manual' && (
             <>
-              <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
-              <button 
-                onClick={() => setTransformMode(prev => prev === 'translate' ? 'rotate' : 'translate')} 
-                className={`mode-btn ${transformMode === 'rotate' ? 'active' : ''}`} 
-                title="Toggle Translate/Rotate (R)"
-              >
-                <LucideRotateCw size={20} />
-              </button>
-              <button onClick={rotateSelectedBox} className="mode-btn" title="Auto-Rotate (T)"><LucideCompass size={20} /></button>
-              <button onClick={deleteSelectedBox} className="mode-btn-danger" title="Delete (Del)"><LucideTrash2 size={20} /></button>
+              {selectedBoxIds.length > 0 && (
+                <>
+                  <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
+                  <button 
+                    onClick={() => setTransformMode(prev => prev === 'translate' ? 'rotate' : 'translate')} 
+                    className={`mode-btn ${transformMode === 'rotate' ? 'active' : ''}`} 
+                    title="Toggle Translate/Rotate (R)"
+                  >
+                    <LucideRotateCw size={20} />
+                  </button>
+                  <button onClick={rotateSelectedBox} className="mode-btn" title="Auto-Rotate (T)"><LucideCompass size={20} /></button>
+                  <button onClick={deleteSelectedBox} className="mode-btn-danger" title="Delete (Del)"><LucideTrash2 size={20} /></button>
+                  <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
+                  <button onClick={copySelectedBoxes} className="mode-btn" title="Copy (Ctrl+C)" style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}>
+                    <LucideCopy size={20} />
+                  </button>
+                </>
+              )}
+              {copiedBoxes.length > 0 && (
+                <button onClick={pasteCopiedBoxes} className="mode-btn" title="Paste (Ctrl+V)" style={{ background: '#22c55e', color: '#fff', border: '1px solid #22c55e' }}>
+                  <LucideClipboard size={20} />
+                </button>
+              )}
             </>
           )}
         </div>
@@ -1287,8 +1749,8 @@ export default function App() {
                   key={result.containerId} 
                   result={result} 
                   offset={[0, 0, idx * 18]} 
-                  selectedBoxId={selectedBoxId}
-                  onSelectBox={setSelectedBoxId}
+                  selectedBoxIds={selectedBoxIds}
+                  onSelectBox={handleSelectBox}
                   isManualMode={mode === 'manual'}
                   transformMode={transformMode}
                   onUpdateBox={onUpdateBox}
