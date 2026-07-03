@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Grid, Text, Edges, TransformControls } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, Grid, Text, Edges, TransformControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { 
   Plus as LucidePlus, 
@@ -28,7 +28,9 @@ import {
   RefreshCw as LucideRefreshCw,
   LogOut as LucideLogOut,
   Database as LucideDatabase,
-  ExternalLink as LucideExternalLink
+  ExternalLink as LucideExternalLink,
+  Sparkles as LucideSparkles,
+  Download as LucideDownload
 } from 'lucide-react';
 
 import { 
@@ -160,7 +162,11 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 
 // --- Strategic No-Gap Packing Logic ---
 
-function packBoxesOptimized(containers: ContainerInstance[], modelLibrary: typeof MODEL_LIBRARY = MODEL_LIBRARY): PackingResult[] {
+function packBoxesOptimized(
+  containers: ContainerInstance[],
+  modelLibrary: typeof MODEL_LIBRARY = MODEL_LIBRARY,
+  boxSurfaceDirection: 'default' | 'alternate' | 'height-max' | 'height-min' = 'default'
+): PackingResult[] {
   const results: PackingResult[] = [];
 
   containers.forEach(containerInst => {
@@ -190,8 +196,6 @@ function packBoxesOptimized(containers: ContainerInstance[], modelLibrary: typeo
         [task.h, task.w, task.l],
       ];
 
-      const sortedRotations = [...allRotations];
-
       while (qtyRemaining > 0) {
         let bestPlacement: { pIndex: number, rotation: number[], x: number, y: number, z: number } | null = null;
         
@@ -205,8 +209,18 @@ function packBoxesOptimized(containers: ContainerInstance[], modelLibrary: typeo
           (a.z - b.z)
         );
 
-        // Sort rotations to prefer "wall-hugging" (smallest dimension along X)
-        const sortedRotations = [...allRotations].sort((a, b) => a[0] - b[0]);
+        // Sort rotations to prefer "wall-hugging" or alternate face based on preference
+        const sortedRotations = [...allRotations].sort((a, b) => {
+          if (boxSurfaceDirection === 'alternate') {
+            return b[0] - a[0]; // Prefers larger width along container X-axis (length-wise)
+          } else if (boxSurfaceDirection === 'height-max') {
+            return b[1] - a[1]; // Prefers larger height along container Y-axis (Upright/fragile)
+          } else if (boxSurfaceDirection === 'height-min') {
+            return a[1] - b[1]; // Prefers smaller height along container Y-axis (Flat/stable)
+          } else {
+            return a[0] - b[0]; // Default: Prefers smaller width along container X-axis (wall-hugging)
+          }
+        });
 
         for (let i = 0; i < points.length; i++) {
           const p = points[i];
@@ -477,9 +491,11 @@ interface Box3DProps {
   allBoxes: PackedBox[];
   containerType: keyof typeof CONTAINER_TYPES;
   netX?: number;
+  autoSettle?: boolean;
+  renderOptions?: { showCabin: boolean; showNet: boolean; showTruck: boolean; showLabels?: boolean };
 }
 
-const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onSelect, isManualMode, transformMode, onUpdate, allBoxes, containerType, netX }) => {
+const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onSelect, isManualMode, transformMode, onUpdate, allBoxes, containerType, netX, autoSettle = true, renderOptions }) => {
   const s = 0.001; 
   const meshRef = useRef<THREE.Mesh>(null);
   const lastValidPos = useRef({ x: box.x, y: box.y, z: box.z, width: box.width, height: box.height, depth: box.depth });
@@ -519,6 +535,35 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onS
         <Edges color={isSelected ? (isValid ? "#3b82f6" : "#ef4444") : "#000"} threshold={15} opacity={isSelected ? 1 : 0.6} transparent />
       </mesh>
 
+      {renderOptions?.showLabels && (
+        <Html
+          position={[
+            (box.x + box.width / 2) * s,
+            (box.y + box.height + 15) * s,
+            (box.z + box.depth / 2) * s
+          ]}
+          center
+          distanceFactor={6}
+          style={{
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            fontFamily: 'Inter, system-ui, sans-serif',
+            fontSize: '8px',
+            fontWeight: 800,
+            background: isSelected ? 'rgba(37, 99, 235, 0.95)' : 'rgba(15, 23, 42, 0.85)',
+            color: '#fff',
+            padding: '2px 5px',
+            borderRadius: '4px',
+            border: isSelected ? '1px solid #fff' : '1px solid rgba(255, 255, 255, 0.25)',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+            userSelect: 'none',
+            transition: 'all 0.1s'
+          }}
+        >
+          {box.modelInfo} — {box.width}×{box.height}×{box.depth} mm
+        </Html>
+      )}
+
       {isSelected && isManualMode && isPrimaryAnchor && (
         <TransformControls 
           object={meshRef.current || undefined} 
@@ -553,16 +598,28 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onS
                   const collides = checkGroupCollision(selectedBoxIds, { x: dragDeltaX, y: dragDeltaY, z: dragDeltaZ }, allBoxes, containerType, netX);
                   setIsValid(!collides);
                 } else {
-                  const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
-                  if (bestFit) {
-                    meshRef.current.scale.set(
-                      bestFit.width / box.width,
-                      bestFit.height / box.height,
-                      bestFit.depth / box.depth
-                    );
-                    if (!isValid) setIsValid(true);
+                  if (autoSettle) {
+                    const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
+                    if (bestFit) {
+                      meshRef.current.scale.set(
+                        bestFit.width / box.width,
+                        bestFit.height / box.height,
+                        bestFit.depth / box.depth
+                      );
+                      if (!isValid) setIsValid(true);
+                    } else {
+                      if (isValid) setIsValid(false);
+                    }
                   } else {
-                    if (isValid) setIsValid(false);
+                    const testBox = {
+                      ...box,
+                      x: centerX - box.width / 2,
+                      y: centerY - box.height / 2,
+                      z: centerZ - box.depth / 2
+                    };
+                    const collides = checkCollision(testBox, allBoxes, containerType, netX);
+                    setIsValid(!collides);
+                    meshRef.current.scale.set(1, 1, 1);
                   }
                 }
               } else {
@@ -593,50 +650,87 @@ const Box3D: React.FC<Box3DProps> = ({ box, isSelected, selectedBoxIds = [], onS
                   const dragDeltaZ = centerZ - (box.z + box.depth / 2);
 
                   const baseDelta = { x: dragDeltaX, y: dragDeltaY, z: dragDeltaZ };
-                  const collides = checkGroupCollision(selectedBoxIds, baseDelta, allBoxes, containerType, netX);
-                  if (collides) {
-                    onUpdate(box.id, lastValidPos.current);
-                  } else {
-                    const gravityDelta = applyGroupGravity(selectedBoxIds, allBoxes, containerType, netX);
-                    onUpdate(box.id, {
-                      x: box.x + baseDelta.x + gravityDelta.x,
-                      y: box.y + baseDelta.y + gravityDelta.y,
-                      z: box.z + baseDelta.z + gravityDelta.z
-                    });
-                  }
+                  const gravityDelta = autoSettle 
+                    ? applyGroupGravity(selectedBoxIds, allBoxes, containerType, netX)
+                    : { x: 0, y: 0, z: 0 };
+                  onUpdate(box.id, {
+                    x: box.x + baseDelta.x + gravityDelta.x,
+                    y: box.y + baseDelta.y + gravityDelta.y,
+                    z: box.z + baseDelta.z + gravityDelta.z
+                  });
                   if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
                   setIsValid(true);
                 } else {
-                  const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
-                  if (!bestFit) {
-                    onUpdate(box.id, lastValidPos.current);
-                    if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
-                    setIsValid(true);
+                  if (autoSettle) {
+                    const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
+                    if (!bestFit) {
+                      onUpdate(box.id, {
+                        x: centerX - box.width / 2,
+                        y: centerY - box.height / 2,
+                        z: centerZ - box.depth / 2
+                      });
+                      if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
+                      setIsValid(true);
+                    } else {
+                      const settledBox = applyGravity(bestFit, allBoxes, containerType, netX);
+                      onUpdate(box.id, { 
+                        x: settledBox.x, 
+                        y: settledBox.y, 
+                        z: settledBox.z,
+                        width: settledBox.width,
+                        height: settledBox.height,
+                        depth: settledBox.depth
+                      });
+                      if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
+                      setIsValid(true);
+                    }
                   } else {
-                    const settledBox = applyGravity(bestFit, allBoxes, containerType, netX);
-                    onUpdate(box.id, { 
-                      x: settledBox.x, 
-                      y: settledBox.y, 
-                      z: settledBox.z,
-                      width: settledBox.width,
-                      height: settledBox.height,
-                      depth: settledBox.depth
+                    onUpdate(box.id, {
+                      x: centerX - box.width / 2,
+                      y: centerY - box.height / 2,
+                      z: centerZ - box.depth / 2
                     });
                     if (meshRef.current) meshRef.current.scale.set(1, 1, 1);
                     setIsValid(true);
                   }
                 }
               } else {
-                // Rotate mode: detect which axis was rotated 90 deg and swap dimensions
-                const bestFit = findBestRotation(centerX, centerY, centerZ, box, allBoxes, containerType, netX);
-                if (bestFit) {
-                  onUpdate(box.id, { 
-                    x: bestFit.x, y: bestFit.y, z: bestFit.z,
-                    width: bestFit.width, height: bestFit.height, depth: bestFit.depth
-                  });
-                } else {
-                   onUpdate(box.id, lastValidPos.current);
+                // Free Rotate snap to closest 90-degree axis permutation
+                const localX = new THREE.Vector3(1, 0, 0).applyQuaternion(meshRef.current.quaternion);
+                const localY = new THREE.Vector3(0, 1, 0).applyQuaternion(meshRef.current.quaternion);
+                const localZ = new THREE.Vector3(0, 0, 1).applyQuaternion(meshRef.current.quaternion);
+                
+                const axes = [localX, localY, localZ];
+                const dims = [box.width, box.height, box.depth];
+                
+                const mappings = [
+                  [0, 1, 2], [0, 2, 1],
+                  [1, 0, 2], [1, 2, 0],
+                  [2, 0, 1], [2, 1, 0]
+                ];
+                
+                let bestMapping = mappings[0];
+                let maxScore = -1;
+                for (const map of mappings) {
+                  const score = Math.abs(axes[map[0]].x) + Math.abs(axes[map[1]].y) + Math.abs(axes[map[2]].z);
+                  if (score > maxScore) {
+                    maxScore = score;
+                    bestMapping = map;
+                  }
                 }
+                
+                const nw = dims[bestMapping[0]];
+                const nh = dims[bestMapping[1]];
+                const nd = dims[bestMapping[2]];
+                
+                onUpdate(box.id, {
+                  x: Math.max(0, centerX - nw / 2),
+                  y: Math.max(0, centerY - nh / 2),
+                  z: Math.max(0, centerZ - nd / 2),
+                  width: nw,
+                  height: nh,
+                  depth: nd
+                });
                 meshRef.current.rotation.set(0, 0, 0);
                 setIsValid(true);
               }
@@ -818,10 +912,11 @@ const Container3D: React.FC<{
   isManualMode: boolean;
   transformMode: 'translate' | 'rotate';
   onUpdateBox: (containerId: string, boxId: string, updates: Partial<PackedBox>) => void;
-  renderOptions: { showCabin: boolean; showNet: boolean; showTruck: boolean };
+  renderOptions: { showCabin: boolean; showNet: boolean; showTruck: boolean; showLabels?: boolean };
   timelineStep: number | null;
   cumulativeStart: number;
-}> = ({ result, offset, selectedBoxIds, onSelectBox, isManualMode, transformMode, onUpdateBox, renderOptions, timelineStep, cumulativeStart }) => {
+  autoSettle: boolean;
+}> = ({ result, offset, selectedBoxIds, onSelectBox, isManualMode, transformMode, onUpdateBox, renderOptions, timelineStep, cumulativeStart, autoSettle }) => {
   const cType = CONTAINER_TYPES[result.containerType];
   const s = 0.001;
 
@@ -895,6 +990,8 @@ const Container3D: React.FC<{
               allBoxes={result.packedBoxes}
               containerType={result.containerType}
               netX={netX}
+              autoSettle={autoSettle}
+              renderOptions={renderOptions}
             />
           );
         })}
@@ -940,6 +1037,7 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [sheetStatus, setSheetStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Load models from Google Sheet
   const syncFromGoogleSheet = useCallback(async (accessToken: string) => {
@@ -997,6 +1095,7 @@ export default function App() {
   }, [syncFromGoogleSheet]);
 
   const handleLogin = async () => {
+    setAuthError(null);
     try {
       setIsAuthLoading(true);
       const result = await googleSignIn();
@@ -1007,7 +1106,7 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Sign-in failed:', err);
-      alert('Failed to sign in: ' + err.message);
+      setAuthError(err.message || String(err));
     } finally {
       setIsAuthLoading(false);
     }
@@ -1018,6 +1117,7 @@ export default function App() {
       await logoutUser();
       setUser(null);
       setToken(null);
+      setAuthError(null);
       // Reset modelLibrary back to local defaults + local customModels
       const saved = localStorage.getItem('customModels');
       const custom = saved ? JSON.parse(saved) : [];
@@ -1126,6 +1226,7 @@ export default function App() {
   const [mode, setMode] = useState<'auto' | 'manual'>('auto');
   const [transformMode, setTransformMode] = useState<'translate' | 'rotate'>('translate');
   const [selectedBoxIds, setSelectedBoxIds] = useState<string[]>([]);
+  const [autoSettle, setAutoSettle] = useState<boolean>(true);
   const selectedBoxId = selectedBoxIds[0] || null;
   const setSelectedBoxId = useCallback((id: string | null) => {
     setSelectedBoxIds(id ? [id] : []);
@@ -1147,12 +1248,15 @@ export default function App() {
 
   const [copiedBoxes, setCopiedBoxes] = useState<PackedBox[]>([]);
   const [checkpoint, setCheckpoint] = useState<PackingResult[] | null>(null);
+  const [boxSurfaceDirection, setBoxSurfaceDirection] = useState<'default' | 'alternate' | 'height-max' | 'height-min'>('default');
+  const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
   
   // Custom Render & Timeline Options
   const [renderOptions, setRenderOptions] = useState({
     showCabin: true,
     showNet: true,
-    showTruck: true
+    showTruck: true,
+    showLabels: true
   });
   const [timelineStep, setTimelineStep] = useState<number | null>(null);
   const [isPlayingTimeline, setIsPlayingTimeline] = useState(false);
@@ -1291,7 +1395,7 @@ export default function App() {
     setIsPacking(true);
     setSelectedBoxId(null);
     setTimeout(() => {
-      const packed = packBoxesOptimized(containers, modelLibrary);
+      const packed = packBoxesOptimized(containers, modelLibrary, boxSurfaceDirection);
       commitState(containers, packed);
       setIsPacking(false);
       setMode('auto');
@@ -1330,6 +1434,572 @@ export default function App() {
     }
     if (changed) commitState(containers, newResults);
   }, [selectedBoxId, mode, results, containers, commitState]);
+
+  const rotateSelectedBoxAxis = useCallback((axis: 'X' | 'Y' | 'Z') => {
+    if (!selectedBoxId || mode !== 'manual') return;
+    const newResults = JSON.parse(JSON.stringify(results)) as PackingResult[];
+    let changed = false;
+    for (const r of newResults) {
+      const boxIndex = r.packedBoxes.findIndex(b => b.id === selectedBoxId);
+      if (boxIndex !== -1) {
+        const box = r.packedBoxes[boxIndex];
+        let nw = box.width;
+        let nh = box.height;
+        let nd = box.depth;
+        
+        if (axis === 'X') {
+          nh = box.depth;
+          nd = box.height;
+        } else if (axis === 'Y') {
+          nw = box.depth;
+          nd = box.width;
+        } else if (axis === 'Z') {
+          nw = box.height;
+          nh = box.width;
+        }
+        
+        r.packedBoxes[boxIndex] = {
+          ...box,
+          width: nw,
+          height: nh,
+          depth: nd
+        };
+        changed = true;
+        break;
+      }
+    }
+    if (changed) commitState(containers, newResults);
+  }, [selectedBoxId, mode, results, containers, commitState]);
+
+  const settleSelectedBox = useCallback(() => {
+    if (!selectedBoxId || mode !== 'manual') return;
+    const newResults = JSON.parse(JSON.stringify(results)) as PackingResult[];
+    let changed = false;
+    for (const r of newResults) {
+      const boxIndex = r.packedBoxes.findIndex(b => b.id === selectedBoxId);
+      if (boxIndex !== -1) {
+        const box = r.packedBoxes[boxIndex];
+        const netX = r.hasNet ? r.packedBoxes.reduce((max, b) => Math.max(max, b.x + b.width), 0) + 50 : undefined;
+        // Find best rotation around current position
+        const bestFit = findBestRotation(box.x + box.width / 2, box.y + box.height / 2, box.z + box.depth / 2, box, r.packedBoxes, r.containerType, netX);
+        const sourceBox = bestFit || box;
+        const settledBox = applyGravity(sourceBox, r.packedBoxes, r.containerType, netX);
+        r.packedBoxes[boxIndex] = {
+          ...box,
+          x: settledBox.x,
+          y: settledBox.y,
+          z: settledBox.z,
+          width: settledBox.width,
+          height: settledBox.height,
+          depth: settledBox.depth
+        };
+        changed = true;
+      }
+    }
+    if (changed) commitState(containers, newResults);
+  }, [selectedBoxId, mode, results, containers, commitState]);
+
+  const tidyAllContainers = useCallback(() => {
+    if (results.length === 0) return;
+    const newResults = JSON.parse(JSON.stringify(results)) as PackingResult[];
+    let changed = false;
+
+    newResults.forEach(r => {
+      const originalCount = r.packedBoxes.length;
+      if (originalCount === 0) return;
+
+      // Sort boxes according to the position of the interface direction of the boxes
+      // x is length (innermost first), y is height (bottom-most first), z is depth (right-most first)
+      const sortedBoxes = [...r.packedBoxes].sort((a, b) => {
+        if (Math.abs(a.x - b.x) > 10) return a.x - b.x;
+        if (Math.abs(a.y - b.y) > 10) return a.y - b.y;
+        return a.z - b.z;
+      });
+
+      const tidiedBoxes: PackedBox[] = [];
+      const netX = r.hasNet ? sortedBoxes.reduce((max, b) => Math.max(max, b.x + b.width), 0) + 50 : undefined;
+      const cType = CONTAINER_TYPES[r.containerType];
+
+      sortedBoxes.forEach(box => {
+        let current = { ...box };
+
+        // 1. Clamp to container boundaries first
+        current.x = Math.max(0, Math.min(cType.width - current.width, current.x));
+        current.y = Math.max(0, Math.min(cType.height - current.height, current.y));
+        current.z = Math.max(0, Math.min(cType.depth - current.depth, current.z));
+
+        // 2. Resolve initial overlap by finding a free space along X if colliding
+        let collision = checkCollision(current, tidiedBoxes, r.containerType, netX);
+        if (collision) {
+          let testX = current.x;
+          while (testX <= cType.width - current.width && checkCollision({ ...current, x: testX }, tidiedBoxes, r.containerType, netX)) {
+            testX += 10;
+          }
+          if (testX <= cType.width - current.width) {
+            current.x = testX;
+          } else {
+            // Find any valid Y/Z coordinate that is free
+            const possibleYZs: {y: number, z: number}[] = [{ y: 0, z: 0 }];
+            tidiedBoxes.forEach(b => {
+              possibleYZs.push({ y: b.y + b.height, z: b.z });
+              possibleYZs.push({ y: b.y, z: b.z + b.depth });
+            });
+
+            possibleYZs.sort((a, b) => {
+              if (a.y !== b.y) return a.y - b.y;
+              return a.z - b.z;
+            });
+
+            for (const p of possibleYZs) {
+              if (p.y + current.height > cType.height || p.z + current.depth > cType.depth) continue;
+              let testX2 = 0;
+              while (testX2 <= cType.width - current.width && checkCollision({ ...current, x: testX2, y: p.y, z: p.z }, tidiedBoxes, r.containerType, netX)) {
+                testX2 += 10;
+              }
+              if (testX2 <= cType.width - current.width) {
+                current.x = testX2;
+                current.y = p.y;
+                current.z = p.z;
+                break;
+              }
+            }
+          }
+        }
+
+        // 3. Dense multi-pass sliding settlement
+        // Pass A: Slide back (X)
+        let settled = false;
+        while (!settled) {
+          let next = { ...current, x: current.x - 10 };
+          if (next.x < 0 || checkCollision(next, tidiedBoxes, r.containerType, netX)) {
+            settled = true;
+          } else {
+            current = next;
+          }
+        }
+
+        // Pass B: Slide down (Y)
+        settled = false;
+        while (!settled) {
+          let next = { ...current, y: current.y - 10 };
+          if (next.y < 0 || checkCollision(next, tidiedBoxes, r.containerType, netX)) {
+            settled = true;
+          } else {
+            current = next;
+          }
+        }
+
+        // Pass C: Slide sideways (Z)
+        settled = false;
+        while (!settled) {
+          let next = { ...current, z: current.z - 10 };
+          if (next.z < 0 || checkCollision(next, tidiedBoxes, r.containerType, netX)) {
+            settled = true;
+          } else {
+            current = next;
+          }
+        }
+
+        // Pass D: Double-check Slide back (X)
+        settled = false;
+        while (!settled) {
+          let next = { ...current, x: current.x - 10 };
+          if (next.x < 0 || checkCollision(next, tidiedBoxes, r.containerType, netX)) {
+            settled = true;
+          } else {
+            current = next;
+          }
+        }
+
+        // Pass E: Double-check Slide down (Y)
+        settled = false;
+        while (!settled) {
+          let next = { ...current, y: current.y - 10 };
+          if (next.y < 0 || checkCollision(next, tidiedBoxes, r.containerType, netX)) {
+            settled = true;
+          } else {
+            current = next;
+          }
+        }
+
+        tidiedBoxes.push(current);
+      });
+
+      r.packedBoxes = tidiedBoxes;
+      changed = true;
+    });
+
+    if (changed) commitState(containers, newResults);
+  }, [results, containers, commitState]);
+
+  const handleCopyToClipboard = useCallback(() => {
+    if (results.length === 0) return;
+    
+    let summary = `GODHAND - CONTAINER PACKING REPORT\n`;
+    summary += `Generated on: ${new Date().toLocaleString()}\n`;
+    summary += `========================================\n\n`;
+    
+    results.forEach((r, idx) => {
+      const density = ((r.packedVolume / r.totalVolume) * 100).toFixed(1);
+      const emptySpace = (100 - parseFloat(density)).toFixed(1);
+      const packedM3 = (r.packedVolume / 1e9).toFixed(2);
+      const totalM3 = (r.totalVolume / 1e9).toFixed(2);
+      const wastedM3 = ((r.totalVolume - r.packedVolume) / 1e9).toFixed(2);
+      
+      let orientationDesc = 'Default (Wall-Hugging)';
+      if (boxSurfaceDirection === 'alternate') {
+        orientationDesc = 'Alternate (Length-Wise)';
+      } else if (boxSurfaceDirection === 'height-max') {
+        orientationDesc = 'Upright (Height-Maximized)';
+      } else if (boxSurfaceDirection === 'height-min') {
+        orientationDesc = 'Flat Stable (Height-Minimized)';
+      }
+      
+      summary += `UNIT #${idx + 1}: ${r.containerType}\n`;
+      summary += `----------------------------------------\n`;
+      summary += `- Stacking Orientation: ${orientationDesc}\n`;
+      summary += `- Total Packed Volume: ${packedM3} m³ of ${totalM3} m³ (${density}% Dense)\n`;
+      summary += `- Unused/Wasted Volume: ${wastedM3} m³ (${emptySpace}% Empty Space)\n`;
+      summary += `- Total Cargo Box Units: ${r.packedBoxes.length} boxes\n`;
+      
+      // Group packed cargo by model
+      const packedCountMap: Record<string, number> = {};
+      r.packedBoxes.forEach(b => {
+        packedCountMap[b.modelInfo] = (packedCountMap[b.modelInfo] || 0) + 1;
+      });
+      
+      summary += `- Packed Cargo Breakdown:\n`;
+      Object.entries(packedCountMap).forEach(([modelInfo, qty]) => {
+        summary += `  • ${modelInfo}: ${qty} units\n`;
+      });
+      
+      if (r.unfitItems.length > 0) {
+        summary += `- Surplus Inventory (Unfit):\n`;
+        r.unfitItems.forEach(u => {
+          summary += `  • ${u.model} (${u.size}"): ${u.count} unfit\n`;
+        });
+      }
+      summary += `\n`;
+    });
+    
+    summary += `========================================\n`;
+    
+    navigator.clipboard.writeText(summary)
+      .then(() => {
+        setExportSuccessMessage("Summary report copied to clipboard!");
+        setTimeout(() => setExportSuccessMessage(null), 3000);
+      })
+      .catch(err => {
+        console.error("Failed to copy report:", err);
+        alert("Failed to copy to clipboard.");
+      });
+  }, [results, boxSurfaceDirection]);
+
+  const handleExportReport = useCallback(() => {
+    if (results.length === 0) return;
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert("Please allow pop-ups to export the PDF report.");
+      return;
+    }
+
+    let reportHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>GODHAND - Container Packing Logistics Report</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+          body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            color: #1e293b;
+            background: #fff;
+            margin: 0;
+            padding: 40px;
+            font-size: 14px;
+            line-height: 1.5;
+          }
+          .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid #0f172a;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+          }
+          .logo-area h1 {
+            margin: 0;
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            color: #0f172a;
+            text-transform: uppercase;
+          }
+          .logo-area p {
+            margin: 5px 0 0 0;
+            color: #64748b;
+            font-weight: 500;
+            font-size: 12px;
+          }
+          .meta-area {
+            text-align: right;
+            font-size: 12px;
+            color: #475569;
+          }
+          .meta-area p {
+            margin: 3px 0;
+          }
+          .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 8px;
+            margin: 30px 0 15px 0;
+            color: #0f172a;
+          }
+          .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+          }
+          .metric-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+          }
+          .metric-card .value {
+            font-size: 22px;
+            font-weight: 800;
+            color: #0f172a;
+            margin-top: 5px;
+          }
+          .metric-card .label {
+            font-size: 10px;
+            font-weight: 700;
+            color: #64748b;
+            text-transform: uppercase;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 25px;
+          }
+          th {
+            background: #0f172a;
+            color: #fff;
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+          }
+          td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #e2e8f0;
+            font-size: 13px;
+          }
+          tr:nth-child(even) td {
+            background: #f8fafc;
+          }
+          .unfit-box {
+            background: #fff5f5;
+            border: 1.5px dashed #fca5a5;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 25px;
+          }
+          .unfit-box h4 {
+            margin: 0 0 10px 0;
+            color: #c53030;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+          }
+          .unfit-item {
+            font-size: 13px;
+            color: #9b2c2c;
+            margin: 4px 0;
+          }
+          .footer {
+            margin-top: 60px;
+            border-top: 1px solid #cbd5e1;
+            padding-top: 20px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #64748b;
+          }
+          .signature-space {
+            margin-top: 40px;
+            border-top: 1px solid #64748b;
+            width: 200px;
+            text-align: center;
+            padding-top: 8px;
+            font-size: 12px;
+            font-weight: 600;
+          }
+          @media print {
+            body {
+              padding: 0;
+            }
+            button {
+              display: none;
+            }
+          }
+          .print-btn {
+            background: #0f172a;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 700;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-bottom: 20px;
+            display: inline-block;
+          }
+          .print-btn:hover {
+            background: #1e293b;
+          }
+        </style>
+      </head>
+      <body>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+        </div>
+        
+        <div class="header">
+          <div class="logo-area">
+            <h1>Godhand Logistics</h1>
+            <p>High-Density 3D Container Stuffing Manifest</p>
+          </div>
+          <div class="meta-area">
+            <p><strong>Report Date:</strong> ${new Date().toLocaleString()}</p>
+            <p><strong>Stacking Heuristic:</strong> ${
+              boxSurfaceDirection === 'default' ? 'Default (Wall-Hugging)' :
+              boxSurfaceDirection === 'alternate' ? 'Alternate (Length-Wise)' :
+              boxSurfaceDirection === 'height-max' ? 'Upright (Height-Maximized)' : 'Flat Stable (Height-Minimized)'
+            }</p>
+          </div>
+        </div>
+    `;
+
+    results.forEach((r, idx) => {
+      const density = ((r.packedVolume / r.totalVolume) * 100).toFixed(1);
+      const emptySpace = (100 - parseFloat(density)).toFixed(1);
+      const packedM3 = (r.packedVolume / 1e9).toFixed(2);
+      const totalM3 = (r.totalVolume / 1e9).toFixed(2);
+      const wastedM3 = ((r.totalVolume - r.packedVolume) / 1e9).toFixed(2);
+
+      const packedCountMap: Record<string, { qty: number, color: string, sample: PackedBox }> = {};
+      r.packedBoxes.forEach(b => {
+        if (!packedCountMap[b.modelInfo]) {
+          packedCountMap[b.modelInfo] = { qty: 0, color: b.color, sample: b };
+        }
+        packedCountMap[b.modelInfo].qty += 1;
+      });
+
+      reportHtml += `
+        <div class="section-title">UNIT #${idx + 1}: ${r.containerType} CONTAINER SPECIFICATION</div>
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="label">Packed Density</div>
+            <div class="value" style="color: #10b981;">${density}%</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">Empty / Wasted Space</div>
+            <div class="value" style="color: #ef4444;">${emptySpace}%</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">Total Volume Packed</div>
+            <div class="value">${packedM3} m³</div>
+          </div>
+          <div class="metric-card">
+            <div class="label">Total Cargo Units</div>
+            <div class="value">${r.packedBoxes.length} pcs</div>
+          </div>
+        </div>
+
+        <h3 style="font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.02em;">Packed Cargo Manifest</h3>
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 50px;">Color</th>
+              <th>Cargo Model Information</th>
+              <th style="text-align: right;">Unit Length</th>
+              <th style="text-align: right;">Unit Width</th>
+              <th style="text-align: right;">Unit Height</th>
+              <th style="text-align: right; width: 80px;">Quantity</th>
+              <th style="text-align: right; width: 120px;">Total Vol (m³)</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      Object.entries(packedCountMap).forEach(([modelInfo, data]) => {
+        const itemVol = (data.sample.width * data.sample.height * data.sample.depth) / 1e9;
+        const totalItemVol = itemVol * data.qty;
+        reportHtml += `
+          <tr>
+            <td style="text-align: center;"><div style="width: 14px; height: 14px; border-radius: 3px; background: ${data.color}; border: 1px solid rgba(0,0,0,0.15); display: inline-block;"></div></td>
+            <td><strong>${modelInfo}</strong></td>
+            <td style="text-align: right;">${data.sample.width} mm</td>
+            <td style="text-align: right;">${data.sample.depth} mm</td>
+            <td style="text-align: right;">${data.sample.height} mm</td>
+            <td style="text-align: right;"><strong>${data.qty}</strong></td>
+            <td style="text-align: right;">${totalItemVol.toFixed(3)} m³</td>
+          </tr>
+        `;
+      });
+
+      reportHtml += `
+          </tbody>
+        </table>
+      `;
+
+      if (r.unfitItems.length > 0) {
+        reportHtml += `
+          <div class="unfit-box">
+            <h4>Surplus / Unfit Cargo (Exceeded Container Capacity)</h4>
+            ${r.unfitItems.map(u => `
+              <div class="unfit-item">• <strong>${u.model} (${u.size}")</strong>: ${u.count} units could not fit.</div>
+            `).join('')}
+          </div>
+        `;
+      }
+    });
+
+    reportHtml += `
+        <div style="display: flex; justify-content: space-between; margin-top: 80px;">
+          <div class="signature-space">
+            Prepared By (Logistics Clerk)
+          </div>
+          <div class="signature-space">
+            Approved By (Warehouse Manager)
+          </div>
+        </div>
+
+        <div class="footer">
+          <span>Godhand Container Packing — Advanced Space Optimization System</span>
+          <span>Page 1 of 1</span>
+        </div>
+      </body>
+      </html>
+    `;
+
+    printWindow.document.write(reportHtml);
+    printWindow.document.close();
+    
+    setExportSuccessMessage("Logistics PDF Report generated!");
+    setTimeout(() => setExportSuccessMessage(null), 3000);
+  }, [results, boxSurfaceDirection]);
 
   const copySelectedBoxes = useCallback(() => {
     if (selectedBoxIds.length === 0) return;
@@ -1456,14 +2126,39 @@ export default function App() {
         if (direction === 's') next.x += step;
 
         const netX = r.hasNet ? r.packedBoxes.reduce((max, b) => Math.max(max, b.x + b.width), 0) + 50 : undefined;
-        if (!checkCollision(next, r.packedBoxes, r.containerType, netX)) {
-          r.packedBoxes[boxIndex] = next;
-          changed = true;
+        if (autoSettle) {
+          const centerX = next.x + next.width / 2;
+          const centerY = next.y + next.height / 2;
+          const centerZ = next.z + next.depth / 2;
+          const bestFit = findBestRotation(centerX, centerY, centerZ, next, r.packedBoxes, r.containerType, netX);
+          if (bestFit) {
+            const settledBox = applyGravity(bestFit, r.packedBoxes, r.containerType, netX);
+            r.packedBoxes[boxIndex] = {
+              ...box,
+              x: settledBox.x,
+              y: settledBox.y,
+              z: settledBox.z,
+              width: settledBox.width,
+              height: settledBox.height,
+              depth: settledBox.depth
+            };
+            changed = true;
+          } else {
+            if (!checkCollision(next, r.packedBoxes, r.containerType, netX)) {
+              r.packedBoxes[boxIndex] = next;
+              changed = true;
+            }
+          }
+        } else {
+          if (!checkCollision(next, r.packedBoxes, r.containerType, netX)) {
+            r.packedBoxes[boxIndex] = next;
+            changed = true;
+          }
         }
       }
     }
     if (changed) commitState(containers, newResults);
-  }, [selectedBoxId, mode, results, containers, commitState]);
+  }, [selectedBoxId, mode, results, containers, commitState, autoSettle]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1494,6 +2189,26 @@ export default function App() {
         if (mode === 'manual' && selectedBoxIds.length > 0) {
           rotateSelectedBox();
         }
+      } else if (key === 'g') {
+        if (mode === 'manual') {
+          e.preventDefault();
+          setAutoSettle(prev => !prev);
+        }
+      } else if (key === 'x') {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
+          e.preventDefault();
+          rotateSelectedBoxAxis('X');
+        }
+      } else if (key === 'y' && !isCtrl) {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
+          e.preventDefault();
+          rotateSelectedBoxAxis('Y');
+        }
+      } else if (key === 'z' && !isCtrl) {
+        if (mode === 'manual' && selectedBoxIds.length > 0) {
+          e.preventDefault();
+          rotateSelectedBoxAxis('Z');
+        }
       } else if (key === 'delete' || key === 'backspace') {
         if (mode === 'manual' && selectedBoxIds.length > 0) {
           e.preventDefault();
@@ -1508,7 +2223,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo, rotateSelectedBox, deleteSelectedBox, moveSelectedBox, copySelectedBoxes, pasteCopiedBoxes, mode, selectedBoxIds, copiedBoxes]);
+  }, [undo, redo, rotateSelectedBox, rotateSelectedBoxAxis, deleteSelectedBox, moveSelectedBox, copySelectedBoxes, pasteCopiedBoxes, mode, selectedBoxIds, copiedBoxes]);
 
   const saveCheckpoint = () => {
     setCheckpoint(JSON.parse(JSON.stringify(results)));
@@ -1653,6 +2368,55 @@ export default function App() {
                 <p style={{ margin: 0, fontSize: '0.65rem', color: '#64748b', lineHeight: 1.4 }}>
                   🔓 Running in <strong>Local Mode</strong>. Sign in with Google to sync and modify the shared MillinksDB spreadsheet.
                 </p>
+
+                {authError && (
+                  <div style={{
+                    background: '#fef2f2',
+                    border: '1px solid #fca5a5',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                  }}>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+                      <LucideAlertTriangle size={14} color="#ef4444" style={{ marginTop: '2px', flexShrink: 0 }} id="auth-error-icon" />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#991b1b' }}>Google Sign-In Blocked by Iframe</span>
+                        <span style={{ fontSize: '0.62rem', color: '#7f1d1d', lineHeight: 1.3 }}>
+                          Browsers block Google Auth popups inside the preview iframe. Open the app in a standalone tab to sign in securely.
+                        </span>
+                        <span style={{ fontSize: '0.58rem', color: '#b91c1c', marginTop: '4px', fontStyle: 'italic' }}>
+                          Reason: {authError}
+                        </span>
+                      </div>
+                    </div>
+                    <a
+                      href={window.location.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        textDecoration: 'none',
+                        background: '#ef4444',
+                        color: '#fff',
+                        borderRadius: '6px',
+                        height: '26px',
+                        fontSize: '0.65rem',
+                        fontWeight: 800,
+                        transition: 'opacity 0.15s',
+                        cursor: 'pointer'
+                      }}
+                      id="standalone-app-link"
+                    >
+                      <LucideExternalLink size={10} /> Open Standalone App
+                    </a>
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={handleLogin}
@@ -1968,6 +2732,97 @@ export default function App() {
           ))}
         </div>
 
+        <div style={{ 
+          background: '#f8fafc', 
+          border: '1px solid #e2e8f0', 
+          borderRadius: '12px', 
+          padding: '12px 14px', 
+          marginBottom: '16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '8px'
+        }} id="box-stacking-direction-panel">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.62rem', fontWeight: 950, color: '#000', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Stacking Orientation Heuristic
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+            <button
+              onClick={() => setBoxSurfaceDirection('default')}
+              style={{
+                padding: '6px 10px',
+                fontSize: '0.66rem',
+                fontWeight: 800,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                border: boxSurfaceDirection === 'default' ? '1.5px solid #000' : '1px solid #cbd5e1',
+                background: boxSurfaceDirection === 'default' ? '#000' : '#fff',
+                color: boxSurfaceDirection === 'default' ? '#fff' : '#475569',
+                transition: 'all 0.15s'
+              }}
+              title="Default stacking (wall-hugging / smallest side along container length)"
+              id="heuristic-default-btn"
+            >
+              Default (Wall-Hugging)
+            </button>
+            <button
+              onClick={() => setBoxSurfaceDirection('alternate')}
+              style={{
+                padding: '6px 10px',
+                fontSize: '0.66rem',
+                fontWeight: 800,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                border: boxSurfaceDirection === 'alternate' ? '1.5px solid #000' : '1px solid #cbd5e1',
+                background: boxSurfaceDirection === 'alternate' ? '#000' : '#fff',
+                color: boxSurfaceDirection === 'alternate' ? '#fff' : '#475569',
+                transition: 'all 0.15s'
+              }}
+              title="Alternate face stacking (longest side along container length)"
+              id="heuristic-alternate-btn"
+            >
+              Length-Wise
+            </button>
+            <button
+              onClick={() => setBoxSurfaceDirection('height-max')}
+              style={{
+                padding: '6px 10px',
+                fontSize: '0.66rem',
+                fontWeight: 800,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                border: boxSurfaceDirection === 'height-max' ? '1.5px solid #000' : '1px solid #cbd5e1',
+                background: boxSurfaceDirection === 'height-max' ? '#000' : '#fff',
+                color: boxSurfaceDirection === 'height-max' ? '#fff' : '#475569',
+                transition: 'all 0.15s'
+              }}
+              title="Upright stacking (tallest side standing vertical)"
+              id="heuristic-height-max-btn"
+            >
+              Upright (Height-Max)
+            </button>
+            <button
+              onClick={() => setBoxSurfaceDirection('height-min')}
+              style={{
+                padding: '6px 10px',
+                fontSize: '0.66rem',
+                fontWeight: 800,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                border: boxSurfaceDirection === 'height-min' ? '1.5px solid #000' : '1px solid #cbd5e1',
+                background: boxSurfaceDirection === 'height-min' ? '#000' : '#fff',
+                color: boxSurfaceDirection === 'height-min' ? '#fff' : '#475569',
+                transition: 'all 0.15s'
+              }}
+              title="Flat stable stacking (smallest side vertical / low center of gravity)"
+              id="heuristic-height-min-btn"
+            >
+              Flat Stable (Height-Min)
+            </button>
+          </div>
+        </div>
+
         <button onClick={runPacking} disabled={isPacking} className="btn-primary">
           {isPacking ? <LucideRotateCw className="animate-spin" size={20} /> : <LucideMaximize size={20} />}
           {isPacking ? 'Solving Matrix...' : 'Apply Density Solver'}
@@ -1998,6 +2853,25 @@ export default function App() {
           <button onClick={redo} disabled={historyIndex >= history.length - 1} className="mode-btn" title="Redo (Ctrl+Y)"><LucideRedo size={20} /></button>
           {mode === 'manual' && (
             <>
+              <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
+              <button 
+                onClick={() => setAutoSettle(prev => !prev)} 
+                className={`mode-btn ${autoSettle ? 'active' : ''}`} 
+                title={`Auto-Settle & Gravity (G): ${autoSettle ? 'ON' : 'OFF'}`}
+                style={autoSettle ? { background: '#6366f1', color: '#fff', border: '1px solid #6366f1' } : {}}
+              >
+                <LucideSparkles size={20} />
+              </button>
+              <button 
+                onClick={tidyAllContainers} 
+                className="mode-btn" 
+                title="Tidy Cargo Gaps neatly"
+                style={{ background: '#0f172a', color: '#fff', display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px', border: '1px solid #0f172a', borderRadius: '12px', height: '40px' }}
+              >
+                <LucideSparkles size={16} />
+                <span style={{ fontSize: '0.78rem', fontWeight: 'bold' }}>Tidy Gaps</span>
+              </button>
+
               {selectedBoxIds.length > 0 && (
                 <>
                   <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
@@ -2009,6 +2883,10 @@ export default function App() {
                     <LucideRotateCw size={20} />
                   </button>
                   <button onClick={rotateSelectedBox} className="mode-btn" title="Auto-Rotate (T)"><LucideCompass size={20} /></button>
+                  <button onClick={() => rotateSelectedBoxAxis('X')} className="mode-btn" style={{ fontWeight: 800, fontSize: '0.8rem', fontFamily: 'monospace' }} title="Pitch X (90° Height ↔ Depth)">X</button>
+                  <button onClick={() => rotateSelectedBoxAxis('Y')} className="mode-btn" style={{ fontWeight: 800, fontSize: '0.8rem', fontFamily: 'monospace' }} title="Yaw Y (90° Width ↔ Depth)">Y</button>
+                  <button onClick={() => rotateSelectedBoxAxis('Z')} className="mode-btn" style={{ fontWeight: 800, fontSize: '0.8rem', fontFamily: 'monospace' }} title="Roll Z (90° Width ↔ Height)">Z</button>
+                  <button onClick={settleSelectedBox} className="mode-btn" title="Snap Settle Box"><LucideLayers size={20} /></button>
                   <button onClick={deleteSelectedBox} className="mode-btn-danger" title="Delete (Del)"><LucideTrash2 size={20} /></button>
                   <div style={{ width: '1px', background: '#e2e8f0', margin: '0 5px' }} />
                   <button onClick={copySelectedBoxes} className="mode-btn" title="Copy (Ctrl+C)" style={{ background: '#f8fafc', border: '1px solid #cbd5e1' }}>
@@ -2055,6 +2933,10 @@ export default function App() {
                 <input type="checkbox" checked={renderOptions.showTruck} onChange={e => setRenderOptions(prev => ({ ...prev, showTruck: e.target.checked }))} style={{ accentColor: '#000', width: '14px', height: '14px', cursor: 'pointer' }} />
                 Show truck (Chassis & Wheels)
               </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', fontWeight: 800, cursor: 'pointer', color: '#1e293b' }}>
+                <input type="checkbox" checked={renderOptions.showLabels} onChange={e => setRenderOptions(prev => ({ ...prev, showLabels: e.target.checked }))} style={{ accentColor: '#000', width: '14px', height: '14px', cursor: 'pointer' }} id="toggle-labels-checkbox" />
+                Show Box Model Labels
+              </label>
             </div>
           </div>
         </div>
@@ -2086,6 +2968,7 @@ export default function App() {
                   renderOptions={renderOptions}
                   timelineStep={timelineStep}
                   cumulativeStart={cumulativeStart}
+                  autoSettle={autoSettle}
                 />
               );
             })}
@@ -2168,22 +3051,85 @@ export default function App() {
         {results.length > 0 && (
           <div className="analytic-overlay">
             <h3 className="overlay-title"><LucideSettings2 size={14} style={{ marginRight: '8px' }} />Logistics Report</h3>
-            {results.map(r => (
-              <div key={r.containerId} className="result-stat">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}><LucideCheckCircle size={14} color="#10b981" /><span style={{ fontSize: '0.8rem', fontWeight: 950, color: '#000' }}>{r.containerType} UNIT</span></div>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 950, color: '#000' }}>{Math.round((r.packedVolume / r.totalVolume) * 1000) / 10}% Dense</span>
-                </div>
-                <div className="progress-bar"><div className="progress-fill" style={{ width: `${(r.packedVolume / r.totalVolume) * 100}%` }} /></div>
-                <div className="stats-grid"><div className="stat-pill">Units: <strong>{r.packedBoxes.length}</strong></div><div className="stat-pill"><LucideLayers size={10} /> Tier Mode</div></div>
-                {r.unfitItems.length > 0 && (
-                  <div className="unfit-list">
-                    <div className="unfit-header"><LucideAlertTriangle size={14} /><span>Surplus Inventory:</span></div>
-                    {r.unfitItems.map((u, i) => <div key={i} className="unfit-item">• {u.model} {u.size}": {u.count} unfit</div>)}
+            {results.map(r => {
+              const density = (r.packedVolume / r.totalVolume) * 100;
+              const wastedPercent = 100 - density;
+              return (
+                <div key={r.containerId} className="result-stat">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <LucideCheckCircle size={14} color="#10b981" />
+                      <span style={{ fontSize: '0.8rem', fontWeight: 950, color: '#000' }}>{r.containerType} UNIT</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.74rem', fontWeight: 950, color: '#10b981' }}>{density.toFixed(1)}% Dense</span>
+                      <span style={{ fontSize: '0.74rem', fontWeight: 950, color: '#ef4444' }}>{wastedPercent.toFixed(1)}% Wasted</span>
+                    </div>
                   </div>
-                )}
+                  
+                  {/* Progress bar split display */}
+                  <div className="progress-bar" style={{ display: 'flex' }}>
+                    <div className="progress-fill" style={{ width: `${density}%`, background: '#000' }} />
+                    <div className="progress-wasted" style={{ width: `${wastedPercent}%`, background: '#fee2e2' }} />
+                  </div>
+
+                  {/* Volume breakdowns in cubic meters */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.66rem', color: '#475569', fontWeight: 800, marginTop: '4px', marginBottom: '10px' }}>
+                    <span>Packed Vol: {(r.packedVolume / 1e9).toFixed(2)} m³ / {(r.totalVolume / 1e9).toFixed(2)} m³</span>
+                    <span style={{ color: '#ef4444' }}>Wasted: {((r.totalVolume - r.packedVolume) / 1e9).toFixed(2)} m³</span>
+                  </div>
+
+                  <div className="stats-grid">
+                    <div className="stat-pill">Units: <strong>{r.packedBoxes.length}</strong></div>
+                    <div className="stat-pill"><LucideLayers size={10} /> Tier Mode</div>
+                  </div>
+
+                  {r.unfitItems.length > 0 && (
+                    <div className="unfit-list">
+                      <div className="unfit-header"><LucideAlertTriangle size={14} /><span>Surplus Inventory:</span></div>
+                      {r.unfitItems.map((u, i) => <div key={i} className="unfit-item">• {u.model} {u.size}": {u.count} unfit</div>)}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Export and Clipboard Actions */}
+            <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {exportSuccessMessage && (
+                <div style={{ 
+                  background: '#f0fdf4', 
+                  border: '1px solid #bbf7d0', 
+                  color: '#16a34a', 
+                  padding: '8px 12px', 
+                  borderRadius: '10px', 
+                  fontSize: '0.72rem', 
+                  fontWeight: 800, 
+                  textAlign: 'center' 
+                }}>
+                  {exportSuccessMessage}
+                </div>
+              )}
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                <button 
+                  onClick={handleCopyToClipboard} 
+                  className="btn-secondary" 
+                  style={{ justifyContent: 'center', padding: '8px 10px', fontSize: '0.7rem' }}
+                  title="Copy packing summary text to clipboard"
+                >
+                  <LucideCopy size={12} /> Copy Report
+                </button>
+                <button 
+                  onClick={handleExportReport} 
+                  className="btn-secondary" 
+                  style={{ justifyContent: 'center', padding: '8px 10px', fontSize: '0.7rem' }}
+                  title="Generate a print-ready PDF logistics report"
+                >
+                  <LucideDownload size={12} /> Export Report (PDF)
+                </button>
               </div>
-            ))}
+            </div>
           </div>
         )}
       </div>
