@@ -24,8 +24,23 @@ import {
   Undo as LucideUndo,
   Redo as LucideRedo,
   Copy as LucideCopy,
-  Clipboard as LucideClipboard
+  Clipboard as LucideClipboard,
+  RefreshCw as LucideRefreshCw,
+  LogOut as LucideLogOut,
+  Database as LucideDatabase,
+  ExternalLink as LucideExternalLink
 } from 'lucide-react';
+
+import { 
+  initAuth, 
+  googleSignIn, 
+  logoutUser, 
+  fetchModelsFromSheet, 
+  saveModelsToSheet,
+  SPREADSHEET_ID,
+  SHEET_NAME,
+  type SheetModel 
+} from './sheets';
 
 // --- Constants & Library ---
 
@@ -891,8 +906,25 @@ const Container3D: React.FC<{
 // --- App Hub ---
 
 export default function App() {
-  const [modelLibrary, setModelLibrary] = useState(MODEL_LIBRARY);
-  const [customModels, setCustomModels] = useState<{ model: string; size: string; length: number; width: number; height: number }[]>([]);
+  const [customModels, setCustomModels] = useState<{ model: string; size: string; length: number; width: number; height: number }[]>(() => {
+    try {
+      const saved = localStorage.getItem('customModels');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const [modelLibrary, setModelLibrary] = useState<{ model: string; size: string; length: number; width: number; height: number }[]>(() => {
+    try {
+      const saved = localStorage.getItem('customModels');
+      const custom = saved ? JSON.parse(saved) : [];
+      return [...MODEL_LIBRARY, ...custom];
+    } catch (e) {
+      return MODEL_LIBRARY;
+    }
+  });
+
   const [showCustomModelSec, setShowCustomModelSec] = useState(false);
   
   const [newModel, setNewModel] = useState('');
@@ -900,6 +932,102 @@ export default function App() {
   const [newLength, setNewLength] = useState<number>(300);
   const [newWidth, setNewWidth] = useState<number>(300);
   const [newHeight, setNewHeight] = useState<number>(300);
+
+  // Sheets Auth and Integration states
+  const [user, setUser] = useState<any>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [sheetStatus, setSheetStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+
+  // Load models from Google Sheet
+  const syncFromGoogleSheet = useCallback(async (accessToken: string) => {
+    setIsSyncing(true);
+    setSheetStatus('loading');
+    setSyncError(null);
+    try {
+      const sheetModels = await fetchModelsFromSheet(accessToken);
+      if (sheetModels.length > 0) {
+        // Update library and custom list
+        setModelLibrary(sheetModels);
+        const customOnly = sheetModels.filter(sm => 
+          !MODEL_LIBRARY.some(ml => ml.model === sm.model && ml.size === sm.size)
+        );
+        setCustomModels(customOnly);
+        localStorage.setItem('customModels', JSON.stringify(customOnly));
+        setSheetStatus('success');
+      } else {
+        // Sheet is empty, fill it with current models
+        const savedCustom = localStorage.getItem('customModels');
+        const custom = savedCustom ? JSON.parse(savedCustom) : [];
+        const initialList = [...MODEL_LIBRARY, ...custom];
+        await saveModelsToSheet(accessToken, initialList);
+        setModelLibrary(initialList);
+        setSheetStatus('success');
+      }
+    } catch (err: any) {
+      console.error('Error syncing from Google Sheets:', err);
+      setSyncError(err.message || 'Failed to sync with Google Sheet.');
+      setSheetStatus('error');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, []);
+
+  // Listen to Auth State
+  useEffect(() => {
+    setIsAuthLoading(true);
+    const unsubscribe = initAuth(
+      (currentUser, accessToken) => {
+        setUser(currentUser);
+        setToken(accessToken);
+        setIsAuthLoading(false);
+        syncFromGoogleSheet(accessToken);
+      },
+      () => {
+        setUser(null);
+        setToken(null);
+        setIsAuthLoading(false);
+      }
+    );
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [syncFromGoogleSheet]);
+
+  const handleLogin = async () => {
+    try {
+      setIsAuthLoading(true);
+      const result = await googleSignIn();
+      if (result) {
+        setUser(result.user);
+        setToken(result.accessToken);
+        await syncFromGoogleSheet(result.accessToken);
+      }
+    } catch (err: any) {
+      console.error('Sign-in failed:', err);
+      alert('Failed to sign in: ' + err.message);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+      setUser(null);
+      setToken(null);
+      // Reset modelLibrary back to local defaults + local customModels
+      const saved = localStorage.getItem('customModels');
+      const custom = saved ? JSON.parse(saved) : [];
+      setModelLibrary([...MODEL_LIBRARY, ...custom]);
+      setSheetStatus('idle');
+      setSyncError(null);
+    } catch (err: any) {
+      console.error('Sign-out failed:', err);
+    }
+  };
 
   const handleAddNewModel = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -930,8 +1058,31 @@ export default function App() {
       height: Number(newHeight)
     };
 
-    setModelLibrary(prev => [...prev, newItem]);
-    setCustomModels(prev => [...prev, newItem]);
+    const updatedLibrary = [...modelLibrary, newItem];
+    setModelLibrary(updatedLibrary);
+    
+    setCustomModels(prev => {
+      const updatedCustom = [...prev, newItem];
+      localStorage.setItem('customModels', JSON.stringify(updatedCustom));
+      return updatedCustom;
+    });
+
+    // If authenticated, write the updated library directly to the Google Sheet
+    if (token) {
+      setIsSyncing(true);
+      saveModelsToSheet(token, updatedLibrary)
+        .then(() => {
+          setSheetStatus('success');
+        })
+        .catch((err: any) => {
+          console.error('Failed to sync added model:', err);
+          setSyncError('Added model locally, but Google Sheet update failed: ' + err.message);
+          setSheetStatus('error');
+        })
+        .finally(() => {
+          setIsSyncing(false);
+        });
+    }
 
     setNewSize('');
     setNewLength(300);
@@ -940,8 +1091,31 @@ export default function App() {
   };
 
   const handleRemoveCustomModel = (model: string, size: string) => {
-    setModelLibrary(prev => prev.filter(m => !(m.model === model && m.size === size)));
-    setCustomModels(prev => prev.filter(m => !(m.model === model && m.size === size)));
+    const updatedLibrary = modelLibrary.filter(m => !(m.model === model && m.size === size));
+    setModelLibrary(updatedLibrary);
+    
+    setCustomModels(prev => {
+      const updatedCustom = prev.filter(m => !(m.model === model && m.size === size));
+      localStorage.setItem('customModels', JSON.stringify(updatedCustom));
+      return updatedCustom;
+    });
+
+    // If authenticated, write the updated library directly to the Google Sheet
+    if (token) {
+      setIsSyncing(true);
+      saveModelsToSheet(token, updatedLibrary)
+        .then(() => {
+          setSheetStatus('success');
+        })
+        .catch((err: any) => {
+          console.error('Failed to sync removed model:', err);
+          setSyncError('Removed model locally, but Google Sheet update failed: ' + err.message);
+          setSheetStatus('error');
+        })
+        .finally(() => {
+          setIsSyncing(false);
+        });
+    }
   };
 
   const [containers, setContainers] = useState<ContainerInstance[]>([{ id: generateId(), type: '20GP', items: [] }]);
@@ -1439,6 +1613,161 @@ export default function App() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', marginBottom: '24px', paddingRight: '8px' }}>
+          {/* Database Sync Panel */}
+          <div style={{
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            marginBottom: '16px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <LucideDatabase size={14} color="#475569" />
+                <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  MillinksDB Sync
+                </span>
+              </div>
+              <a 
+                href={`https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/edit`} 
+                target="_blank" 
+                rel="noreferrer"
+                style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.62rem', fontWeight: 700, color: '#2563eb', textDecoration: 'none' }}
+                title="Open Google Sheet"
+              >
+                Open Sheet <LucideExternalLink size={10} />
+              </a>
+            </div>
+
+            {isAuthLoading ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0' }}>
+                <LucideRefreshCw size={12} className="animate-spin" color="#64748b" />
+                <span style={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 500 }}>Connecting with Google Auth...</span>
+              </div>
+            ) : !user ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <p style={{ margin: 0, fontSize: '0.65rem', color: '#64748b', lineHeight: 1.4 }}>
+                  🔓 Running in <strong>Local Mode</strong>. Sign in with Google to sync and modify the shared MillinksDB spreadsheet.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleLogin}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    width: '100%',
+                    height: '32px',
+                    background: '#fff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '8px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    color: '#1f2937',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
+                  }}
+                  id="google-signin-btn"
+                >
+                  <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: 'block', width: '14px', height: '14px' }}>
+                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                  </svg>
+                  Sign in with Google
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {user.photoURL ? (
+                      <img 
+                        src={user.photoURL} 
+                        alt="Avatar" 
+                        referrerPolicy="no-referrer"
+                        style={{ width: '18px', height: '18px', borderRadius: '50%' }} 
+                      />
+                    ) : (
+                      <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: '#3b82f6', color: '#fff', fontSize: '0.55rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>
+                        {user.displayName?.[0] || 'U'}
+                      </div>
+                    )}
+                    <span style={{ fontSize: '0.68rem', color: '#1e293b', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px', whiteSpace: 'nowrap' }} title={user.email}>
+                      {user.displayName || user.email}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: '#ef4444',
+                      fontSize: '0.62rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '4px'
+                    }}
+                    id="sheets-signout-btn"
+                  >
+                    <LucideLogOut size={10} /> Disconnect
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px', width: '100%' }}>
+                  <button
+                    type="button"
+                    onClick={() => syncFromGoogleSheet(token!)}
+                    disabled={isSyncing}
+                    style={{
+                      flex: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px',
+                      height: '28px',
+                      background: '#10b981',
+                      border: '1px solid #10b981',
+                      borderRadius: '6px',
+                      fontSize: '0.68rem',
+                      fontWeight: 800,
+                      color: '#fff',
+                      cursor: isSyncing ? 'not-allowed' : 'pointer',
+                      opacity: isSyncing ? 0.8 : 1,
+                    }}
+                    id="sheets-refresh-btn"
+                  >
+                    <LucideRefreshCw size={11} className={isSyncing ? 'animate-spin' : ''} />
+                    {isSyncing ? 'Refreshing...' : 'Refresh Database'}
+                  </button>
+                </div>
+
+                {sheetStatus === 'success' && (
+                  <div style={{ fontSize: '0.62rem', color: '#10b981', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    ● Database successfully synchronized with Google Sheets!
+                  </div>
+                )}
+                {sheetStatus === 'error' && syncError && (
+                  <div style={{ fontSize: '0.62rem', color: '#ef4444', fontWeight: 600, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span>⚠️ Sync Error:</span>
+                    <span style={{ fontWeight: 400, opacity: 0.9 }}>{syncError}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Toggle Button for Add Custom Model & Size */}
           <button 
             type="button"

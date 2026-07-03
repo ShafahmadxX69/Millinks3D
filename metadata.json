@@ -1,5 +1,6 @@
 {
   "name": "Millinks 3D Material Stuffing Sim",
   "description": "A realistic physics-based stuffing simulator featuring various materials like cotton, foam, and beans with interactive tools.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
