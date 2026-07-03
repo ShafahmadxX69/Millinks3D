@@ -109,14 +109,6 @@ const MODEL_LIBRARY = [
   { model: "PP12-3", size: "M#", length: 681, width: 475, height: 282 },
   { model: "PP12-3", size: "L#", length: 790, width: 551, height: 330 },
   { model: "PP12-3", size: "SML#", length: 790, width: 551, height: 330 },
-  { model: "FQ825", size: "21", length: 589, width: 378, height: 240 },
-  { model: "FQ825", size: "22", length: 616, width: 406, height: 257 },
-  { model: "FQ825", size: "26", length: 694, width: 482, height: 282 },
-  { model: "FQ825", size: "29", length: 768, width: 527, height: 322 },
-  { model: "FQ832", size: "21", length: 589, width: 378, height: 240 },
-  { model: "FQ832", size: "22", length: 616, width: 406, height: 257 },
-  { model: "FQ832", size: "26", length: 694, width: 482, height: 282 },
-  { model: "FQ832", size: "29", length: 768, width: 527, height: 322 },
 ];
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
@@ -1258,6 +1250,148 @@ export default function App() {
   const [checkpoint, setCheckpoint] = useState<PackingResult[] | null>(null);
   const [boxSurfaceDirection, setBoxSurfaceDirection] = useState<'default' | 'alternate' | 'height-max' | 'height-min'>('default');
   const [exportSuccessMessage, setExportSuccessMessage] = useState<string | null>(null);
+
+  // Invoice & Brand States
+  const [invoiceTitle, setInvoiceTitle] = useState('INV-2026-001');
+  const [brandName, setBrandName] = useState('Millinks');
+  const [savedInvoiceSlots, setSavedInvoiceSlots] = useState<{
+    id: string;
+    invoiceTitle: string;
+    brandName: string;
+    containers: ContainerInstance[];
+    results: PackingResult[];
+    boxSurfaceDirection: 'default' | 'alternate' | 'height-max' | 'height-min';
+    autoSettle: boolean;
+    savedAt: string;
+    containersCount: number;
+  }[]>(() => {
+    try {
+      const saved = localStorage.getItem('savedInvoiceSlots');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const saveInvoiceToSlots = () => {
+    const newSlot = {
+      id: generateId(),
+      invoiceTitle: invoiceTitle.trim() || 'Untitled Invoice',
+      brandName: brandName.trim() || 'Default Brand',
+      containers: JSON.parse(JSON.stringify(containers)),
+      results: JSON.parse(JSON.stringify(results)),
+      boxSurfaceDirection,
+      autoSettle,
+      savedAt: new Date().toISOString(),
+      containersCount: containers.length
+    };
+    const updated = [newSlot, ...savedInvoiceSlots];
+    setSavedInvoiceSlots(updated);
+    localStorage.setItem('savedInvoiceSlots', JSON.stringify(updated));
+    setExportSuccessMessage("Invoice saved to browser memory slot!");
+    setTimeout(() => setExportSuccessMessage(null), 3000);
+  };
+
+  const loadInvoiceFromSlot = (slot: any) => {
+    setInvoiceTitle(slot.invoiceTitle);
+    setBrandName(slot.brandName);
+    setBoxSurfaceDirection(slot.boxSurfaceDirection || 'default');
+    setAutoSettle(slot.autoSettle !== undefined ? slot.autoSettle : true);
+    commitState(slot.containers, slot.results || []);
+    setExportSuccessMessage(`Loaded "${slot.invoiceTitle}" successfully!`);
+    setTimeout(() => setExportSuccessMessage(null), 3000);
+  };
+
+  const deleteInvoiceSlot = (id: string) => {
+    const updated = savedInvoiceSlots.filter(s => s.id !== id);
+    setSavedInvoiceSlots(updated);
+    localStorage.setItem('savedInvoiceSlots', JSON.stringify(updated));
+    setExportSuccessMessage("Invoice slot deleted.");
+    setTimeout(() => setExportSuccessMessage(null), 3000);
+  };
+
+  const downloadInvoiceAsFile = () => {
+    const configData = {
+      fileType: "GodhandInvoiceCheckpoint",
+      version: "1.0",
+      invoiceTitle: invoiceTitle.trim() || 'Untitled Invoice',
+      brandName: brandName.trim() || 'Default Brand',
+      boxSurfaceDirection,
+      autoSettle,
+      containers,
+      results
+    };
+    const blob = new Blob([JSON.stringify(configData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `invoice-${brandName.trim().toLowerCase().replace(/\s+/g, '-')}-${invoiceTitle.trim().toLowerCase().replace(/\s+/g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setExportSuccessMessage("Checkpoint file downloaded successfully!");
+    setTimeout(() => setExportSuccessMessage(null), 3000);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDraggingFile(false);
+  };
+
+  const processLoadedFile = (fileText: string) => {
+    try {
+      const data = JSON.parse(fileText);
+      if (data.fileType === "GodhandInvoiceCheckpoint" || data.containers) {
+        setInvoiceTitle(data.invoiceTitle || 'Imported Invoice');
+        setBrandName(data.brandName || 'Imported Brand');
+        if (data.boxSurfaceDirection) setBoxSurfaceDirection(data.boxSurfaceDirection);
+        if (data.autoSettle !== undefined) setAutoSettle(data.autoSettle);
+        commitState(data.containers, data.results || []);
+        setExportSuccessMessage("Invoice loaded successfully from file!");
+        setTimeout(() => setExportSuccessMessage(null), 3000);
+      } else {
+        alert("Invalid file format. Please upload a valid Godhand Packing Checkpoint file.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error reading checkpoint file. Make sure it's a valid JSON file.");
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingFile(false);
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          processLoadedFile(event.target.result as string);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          processLoadedFile(event.target.result as string);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
   
   // Custom Render & Timeline Options
   const [renderOptions, setRenderOptions] = useState({
@@ -1885,10 +2019,11 @@ export default function App() {
         
         <div class="header">
           <div class="logo-area">
-            <h1>Godhand Logistics</h1>
+            <h1>${brandName ? brandName : 'Godhand Logistics'}</h1>
             <p>High-Density 3D Container Stuffing Manifest</p>
           </div>
           <div class="meta-area">
+            <p><strong>Invoice / Ref:</strong> ${invoiceTitle || 'N/A'}</p>
             <p><strong>Report Date:</strong> ${new Date().toLocaleString()}</p>
             <p><strong>Stacking Heuristic:</strong> ${
               boxSurfaceDirection === 'default' ? 'Default (Wall-Hugging)' :
@@ -2336,6 +2471,191 @@ export default function App() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', marginBottom: '24px', paddingRight: '8px' }}>
+          {/* Invoice & Brand Configuration Panel */}
+          <div style={{
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '14px',
+            marginBottom: '16px',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.02)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px'
+          }} id="invoice-manager-panel">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <LucideClipboard size={14} color="#475569" />
+              <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Invoice & Brand Configuration
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.58rem', fontWeight: 900, color: '#475569', textTransform: 'uppercase' }}>Invoice Title/No.</label>
+                <input 
+                  type="text" 
+                  value={invoiceTitle} 
+                  onChange={e => setInvoiceTitle(e.target.value)}
+                  placeholder="e.g. INV-2026-001"
+                  style={{ width: '100%', padding: '6px 10px', fontSize: '0.75rem', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none', background: '#fff', color: '#000', fontWeight: 700 }}
+                  id="invoice-title-input"
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.58rem', fontWeight: 900, color: '#475569', textTransform: 'uppercase' }}>Brand Name</label>
+                <input 
+                  type="text" 
+                  value={brandName} 
+                  onChange={e => setBrandName(e.target.value)}
+                  placeholder="e.g. Millinks"
+                  style={{ width: '100%', padding: '6px 10px', fontSize: '0.75rem', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none', background: '#fff', color: '#000', fontWeight: 700 }}
+                  id="invoice-brand-input"
+                />
+              </div>
+            </div>
+
+            {/* Drag-and-Drop Area */}
+            <div 
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              style={{
+                border: isDraggingFile ? '2px dashed #3b82f6' : '1px dashed #cbd5e1',
+                background: isDraggingFile ? '#eff6ff' : '#fff',
+                borderRadius: '8px',
+                padding: '10px',
+                textAlign: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                position: 'relative'
+              }}
+              onClick={() => fileInputRef.current?.click()}
+              id="invoice-dropzone"
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileSelect} 
+                accept=".json" 
+                style={{ display: 'none' }} 
+              />
+              <LucideDownload size={16} color={isDraggingFile ? '#3b82f6' : '#64748b'} style={{ margin: '0 auto 4px auto', display: 'block' }} />
+              <span style={{ fontSize: '0.65rem', fontWeight: 700, color: '#475569', display: 'block' }}>
+                {isDraggingFile ? 'Drop file here!' : 'Drag & Drop Checkpoint File (.json)'}
+              </span>
+              <span style={{ fontSize: '0.55rem', color: '#94a3b8', marginTop: '2px', display: 'block' }}>
+                Or click to browse computer
+              </span>
+            </div>
+
+            {/* Save / Download Buttons */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '4px' }}>
+              <button
+                type="button"
+                onClick={saveInvoiceToSlots}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  height: '28px',
+                  background: '#000',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '0.68rem',
+                  fontWeight: 800,
+                  cursor: 'pointer'
+                }}
+                title="Save this invoice setup to browser memory slots"
+                id="save-invoice-slot-btn"
+              >
+                <LucideSave size={11} /> Save Slot
+              </button>
+              <button
+                type="button"
+                onClick={downloadInvoiceAsFile}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
+                  height: '28px',
+                  background: '#fff',
+                  border: '1px solid #cbd5e1',
+                  color: '#0f172a',
+                  borderRadius: '6px',
+                  fontSize: '0.68rem',
+                  fontWeight: 800,
+                  cursor: 'pointer'
+                }}
+                title="Download invoice as a JSON checkpoint file"
+                id="download-invoice-file-btn"
+              >
+                <LucideDownload size={11} /> Download File
+              </button>
+            </div>
+
+            {/* Saved Slots Directory */}
+            {savedInvoiceSlots.length > 0 && (
+              <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '8px', marginTop: '4px' }}>
+                <span style={{ fontSize: '0.58rem', fontWeight: 900, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '6px' }}>
+                  Saved Browser Invoices ({savedInvoiceSlots.length})
+                </span>
+                <div style={{ maxHeight: '100px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {savedInvoiceSlots.map((slot, sIdx) => (
+                    <div key={slot.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fff', padding: '6px 8px', borderRadius: '6px', border: '1px solid #e2e8f0', fontSize: '0.65rem' }}>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }} title={`${slot.brandName} - ${slot.invoiceTitle}`}>
+                        <strong style={{ color: '#0f172a' }}>{slot.invoiceTitle}</strong>
+                        <span style={{ color: '#64748b', fontSize: '0.6rem', marginLeft: '4px' }}>({slot.brandName})</span>
+                        <div style={{ fontSize: '0.55rem', color: '#94a3b8' }}>
+                          {slot.containersCount} Unit(s) • {new Date(slot.savedAt).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button
+                          type="button"
+                          onClick={() => loadInvoiceFromSlot(slot)}
+                          style={{
+                            border: '1px solid #e2e8f0',
+                            background: '#f8fafc',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.6rem',
+                            fontWeight: 800,
+                            color: '#2563eb',
+                            cursor: 'pointer'
+                          }}
+                          id={`load-invoice-slot-${sIdx}`}
+                        >
+                          Load
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteInvoiceSlot(slot.id)}
+                          style={{
+                            border: '1px solid #fee2e2',
+                            background: '#fff5f5',
+                            borderRadius: '4px',
+                            padding: '2px 6px',
+                            fontSize: '0.6rem',
+                            fontWeight: 800,
+                            color: '#ef4444',
+                            cursor: 'pointer'
+                          }}
+                          id={`delete-invoice-slot-${sIdx}`}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Database Sync Panel */}
           <div style={{
             background: '#f8fafc',
