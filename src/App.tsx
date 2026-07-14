@@ -118,6 +118,11 @@ const MODEL_LIBRARY = [
   { model: "FQ832", size: "26", length: 694, width: 482, height: 282 },
   { model: "FQ832", size: "29", length: 768, width: 527, height: 322 },
   { model: "F4625", size: "21", length: 589, width: 378, height: 255 },
+  { model: "F4625", size: "22", length: 616, width: 406, height: 257 },
+  { model: "F4625", size: "27", length: 750, width: 435, height: 355 },
+  { model: "F1425", size: "20", length: 615, width: 405, height: 230 },
+  { model: "F1425", size: "26", length: 710, width: 492, height: 280 },
+  { model: "F1425", size: "31", length: 820, width: 515, height: 315 },
 ];
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
