@@ -125,6 +125,7 @@ const MODEL_LIBRARY = [
   { model: "F1425", size: "31", length: 820, width: 515, height: 315 },
   { model: "F4725", size: "21", length: 593, width: 375, height: 250 },
   { model: "F4725", size: "29", length: 786, width: 505, height: 310 },
+  { model: "FJ583", size: "32", length: 780, width: 468, height: 373 },
 ];
 
 const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
